@@ -68,16 +68,34 @@ def gemini_card_recognition(image_path: str, api_key: str = None):
 
         ⚠️ 重要提醒：不要遗漏右侧角落和边缘的卡牌
 
-        韦特塔罗包含78+2张牌：
-        - 大阿卡纳22张：愚人、魔法师、女祭司、皇后、皇帝、教皇、恋人、战车、力量、隐士、命运之轮、正义、倒吊人、死神、节制、恶魔、高塔、星星、月亮、太阳、审判、世界
-        - 小阿卡纳56张：权杖/圣杯/宝剑/星币 各14张(一到十、侍从、骑士、皇后、国王)
-        - 依恋附属牌2张：22依恋、23母子
+        韦特塔罗标准名称（必须严格使用）：
+        
+        📋 大阿卡纳(22张)：
+        愚人、魔法师、女祭司、皇后、皇帝、教皇、恋人、战车、力量、隐士、命运之轮、正义、倒吊人、死神、节制、恶魔、高塔、星星、月亮、太阳、审判、世界
+        
+        📋 小阿卡纳数字牌(40张)：
+        权杖一、权杖二、权杖三、权杖四、权杖五、权杖六、权杖七、权杖八、权杖九、权杖十
+        圣杯一、圣杯二、圣杯三、圣杯四、圣杯五、圣杯六、圣杯七、圣杯八、圣杯九、圣杯十
+        宝剑一、宝剑二、宝剑三、宝剑四、宝剑五、宝剑六、宝剑七、宝剑八、宝剑九、宝剑十
+        星币一、星币二、星币三、星币四、星币五、星币六、星币七、星币八、星币九、星币十
+        
+        📋 小阿卡纳宫廷牌(16张)：
+        权杖侍从、权杖骑士、权杖皇后、权杖国王
+        圣杯侍从、圣杯骑士、圣杯皇后、圣杯国王
+        宝剑侍从、宝剑骑士、宝剑皇后、宝剑国王
+        星币侍从、星币骑士、星币皇后、星币国王
+        
+        📋 附属牌(2张)：
+        22依恋、23母子
 
-        识别要求：
-        1. 使用准确的中文名称(如"3皇后"、"权杖五"、"圣杯国王"、"1魔法师")
-        2. 判断正位或逆位
-        3. 标注坐标位置，以图片中心为原点，向右为x轴正方向，向下为y轴正方向
-        4. 只输出识别结果，不要解读
+        ⚠️ 重要要求：
+        1. 必须严格使用上述标准名称，不得使用变体名称
+        2. 错误示例：星币女王❌ → 正确：星币皇后✅
+        3. 错误示例：十号星币❌ → 正确：星币十✅
+        4. 错误示例：圣杯国王❌ → 正确：圣杯国王✅（这个是正确的）
+        5. 判断正位或逆位
+        6. 标注坐标位置
+        7. 只输出识别结果，不要解读
 
         输出格式(每行一张牌)：
         卡牌名称,正位/逆位,坐标位置(x, y)
@@ -164,20 +182,179 @@ def gemini_card_recognition(image_path: str, api_key: str = None):
         print(f"❌ Gemini识别失败: {e}")
         return None
 
+def gemini_overlap_recognition(image_path: str, api_key: str = None):
+    """重叠分块识别策略（改进版）"""
+    try:
+        import google.generativeai as genai
+        from PIL import Image
+        import cv2
+        import tempfile
+        import shutil
+        from pathlib import Path
+        
+        if not api_key:
+            load_env_file()
+            api_key = os.getenv('GEMINIAPI')
+        
+        if not api_key:
+            print("❌ 需要Google API Key")
+            return None
+        
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        
+        print("🔄 使用重叠分块识别策略...")
+        
+        img = cv2.imread(image_path)
+        h, w = img.shape[:2]
+        
+        # 分块参数
+        n_blocks = 3
+        overlap = 0.35  # 35%重叠，确保边界卡牌不被遗漏
+        step = int(w * (1 - overlap) / (n_blocks - 1)) if n_blocks > 1 else w
+        block_width = int(w / n_blocks * (1 + overlap))
+        
+        results = {}
+        temp_dir = Path(tempfile.mkdtemp())
+        
+        try:
+            print(f"🔪 分成 {n_blocks} 块，每块宽度 {block_width}px，重叠 {int(overlap*100)}%")
+            
+            for i in range(n_blocks):
+                start = max(0, i * step)
+                end = min(w, start + block_width)
+                
+                sub = img[:, start:end]
+                block_path = temp_dir / f"block_{i}.jpg"
+                cv2.imwrite(str(block_path), sub)
+                
+                # 同时保存到当前目录供查看
+                debug_path = f"debug_block_{i+1}.jpg"
+                cv2.imwrite(debug_path, sub)
+                print(f"   已保存调试图片: {debug_path}")
+                
+                print(f"📦 处理第 {i+1} 块 ({start}-{end}px)...")
+                
+                # 标准化的提示词
+                prompt = """
+                请识别这张图片中的塔罗牌，必须使用标准中文名称。
+                
+                标准名称：
+                - 数字牌：权杖一到权杖十、圣杯一到圣杯十、宝剑一到宝剑十、星币一到星币十
+                - 宫廷牌：各花色的侍从、骑士、皇后、国王 (如：星币皇后、圣杯国王)
+                - 大阿卡纳：愚人、魔法师、女祭司、皇后、皇帝、教皇、恋人、战车、力量、隐士、命运之轮、正义、倒吊人、死神、节制、恶魔、高塔、星星、月亮、太阳、审判、世界
+                
+                ⚠️ 严格要求：
+                - 星币十 ✅（不是"十号星币"）
+                - 星币皇后 ✅（不是"星币女王"）
+                
+                输出格式：卡牌名称,正位/逆位
+                
+                例如：
+                权杖五,正位
+                圣杯国王,逆位
+                星币十,正位
+                星币皇后,正位
+                
+                请识别所有可见的卡牌：
+                """
+                
+                try:
+                    response = model.generate_content([prompt, Image.open(block_path)])
+                    block_result = response.text.strip()
+                    print(f"   识别到: {block_result.replace(chr(10), ' | ')}")
+                    
+                    # 解析结果
+                    for line in block_result.splitlines():
+                        line = line.strip()
+                        if (line and ',' in line and 
+                            not any(skip_word in line for skip_word in ['以下', '识别', '图片', '结果']) and
+                            len(line) < 50):  # 过滤说明文字
+                            
+                            parts = [p.strip() for p in line.split(',')]
+                            if len(parts) >= 2:
+                                card_name = parts[0]
+                                orientation = parts[1]
+                                
+                                if (card_name and orientation and 
+                                    ('正位' in orientation or '逆位' in orientation)):
+                                    
+                                    key = (card_name, orientation)
+                                    if key not in results:  # 简单去重
+                                        results[key] = f"块{i+1}"
+                                        
+                except Exception as e:
+                    print(f"   ⚠️ 第{i+1}块识别失败: {e}")
+                    
+        finally:
+            shutil.rmtree(temp_dir)
+        
+        # 智能去重和格式化输出
+        if results:
+            print(f"\n✅ 重叠分块识别完成，共找到 {len(results)} 张卡牌:")
+            
+            # 转换为标准格式
+            cards = []
+            for (card_name, orientation), source in results.items():
+                cards.append({
+                    'card_name': card_name,
+                    'orientation': orientation,
+                    'position': f"({source})",
+                    'order': len(cards) + 1
+                })
+                print(f"   • {card_name} ({orientation}) - 来源: {source}")
+            
+            return cards
+        else:
+            print("❌ 未识别到任何卡牌")
+            return None
+            
+    except Exception as e:
+        print(f"❌ 重叠分块识别出错: {e}")
+        return None
+
 
 def gemini_recognition_test():
     """Gemini在线识别测试"""
     print("🔮 Gemini Vision 塔罗牌识别")
     print("="*40)
     
-    image_path = "data/card_images/spread_0_4821735726296_.pic.jpg"
+    # 让用户选择图片
+    print("请选择要识别的图片：")
+    print("1. 🎴 原始测试图片 (spread_0_4821735726296_.pic.jpg)")
+    print("2. 📷 自定义图片路径")
+    
+    while True:
+        img_choice = input("请选择图片 (1-2): ").strip()
+        if img_choice in ['1', '2']:
+            break
+        print("❌ 请输入1或2")
+    
+    if img_choice == '1':
+        image_path = "data/card_images/spread_0_4821735726296_.pic.jpg"
+    else:
+        image_path = input("请输入图片路径: ").strip()
+    
+    # 让用户选择识别策略
+    print("\n请选择识别策略：")
+    print("1. 🎯 单图识别 (简洁快速)")
+    print("2. 🔄 重叠分块识别 (更全面，可能找到更多卡牌)")
+    
+    while True:
+        choice = input("请选择 (1-2): ").strip()
+        if choice in ['1', '2']:
+            break
+        print("❌ 请输入1或2")
     
     if not Path(image_path).exists():
         print(f"❌ 图片不存在: {image_path}")
         return None
     
-    # 使用Gemini单图识别
-    recognized_cards = gemini_card_recognition(image_path)
+    # 根据选择使用不同策略
+    if choice == '1':
+        recognized_cards = gemini_card_recognition(image_path)
+    else:
+        recognized_cards = gemini_overlap_recognition(image_path)
     
     if recognized_cards:
         print(f"\n🎴 解析后的卡牌列表 ({len(recognized_cards)} 张):")
