@@ -36,16 +36,18 @@ class WaiteTarotRecognizer:
             "swords": [f"宝剑{i}" for i in ["一", "二", "三", "四", "五", "六", "七", "八", "九", "十"]] + 
                      ["宝剑侍从", "宝剑骑士", "宝剑皇后", "宝剑国王"],
             "pentacles": [f"星币{i}" for i in ["一", "二", "三", "四", "五", "六", "七", "八", "九", "十"]] + 
-                         ["星币侍从", "星币骑士", "星币皇后", "星币国王"]
+                         ["星币侍从", "星币骑士", "星币皇后", "星币国王"],
+            "attachments":["22依恋","23母子"]
         }
         
-        # 所有78张牌的完整列表
+        # 所有78张牌的完整列表（暂时移除附属牌进行测试）
         self.all_cards = (
             self.waite_cards["major"] + 
             self.waite_cards["wands"] + 
             self.waite_cards["cups"] + 
             self.waite_cards["swords"] + 
-            self.waite_cards["pentacles"]
+            self.waite_cards["pentacles"] +
+            self.waite_cards["attachments"]
         )
         
         # 参考数据库
@@ -211,6 +213,13 @@ class WaiteTarotRecognizer:
         if not self.reference_db:
             return {"error": "参考数据库为空"}
         
+        # 预处理：标准化尺寸和增强质量
+        # 调整到标准尺寸
+        card_roi = cv2.resize(card_roi, (200, 300))
+        
+        # 图像增强：去噪和锐化
+        card_roi = cv2.bilateralFilter(card_roi, 9, 75, 75)
+        
         # 计算查询图像的多种特征
         gray = cv2.cvtColor(card_roi, cv2.COLOR_BGR2GRAY)
         
@@ -253,28 +262,33 @@ class WaiteTarotRecognizer:
             # 颜色相似度 (权重60%)
             if ref_data.get('color_histogram'):
                 try:
-                    ref_hist = np.array(ref_data['color_histogram'][:len(color_features)], dtype=np.float32)
-                    query_hist = color_features[:len(ref_hist)].astype(np.float32)
+                    ref_hist = np.array(ref_data['color_histogram'], dtype=np.float32)
+                    query_hist = color_features.astype(np.float32)
                     
-                    # 归一化
-                    ref_hist = ref_hist / (np.sum(ref_hist) + 1e-8)
-                    query_hist = query_hist / (np.sum(query_hist) + 1e-8)
+                    # 确保长度一致
+                    min_len = min(len(ref_hist), len(query_hist))
+                    ref_hist = ref_hist[:min_len]
+                    query_hist = query_hist[:min_len]
                     
-                    # 巴氏距离
-                    bc_coeff = np.sum(np.sqrt(ref_hist * query_hist))
-                    color_sim = bc_coeff
+                    # 使用巴氏距离
+                    color_sim = cv2.compareHist(ref_hist, query_hist, cv2.HISTCMP_BHATTACHARYYA)
+                    color_sim = max(0, 1 - color_sim)  # 转换为相似度
                     similarities.append(('color', color_sim, 0.6))
-                except Exception:
+                except Exception as e:
                     similarities.append(('color', 0, 0.6))
             
             # 边缘相似度 (权重20%)
             if ref_data.get('edge_histogram'):
                 try:
-                    ref_edges = np.array(ref_data['edge_histogram'])
-                    ref_edge_density = np.sum(ref_edges) / len(ref_edges) if len(ref_edges) > 0 else 0
-                    edge_sim = 1 - abs(edge_density - ref_edge_density) / max(edge_density, ref_edge_density, 0.1)
-                    similarities.append(('edge', max(0, edge_sim), 0.2))
-                except Exception:
+                    ref_edges = np.array(ref_data['edge_histogram'], dtype=np.float32)
+                    if 'edge_density' in ref_data:
+                        ref_edge_density = ref_data['edge_density']
+                        edge_density_sim = 1 - abs(edge_density - ref_edge_density) / max(edge_density, ref_edge_density, 0.1)
+                        edge_density_sim = max(0, edge_density_sim)
+                        similarities.append(('edge', edge_density_sim, 0.2))
+                    else:
+                        similarities.append(('edge', 0, 0.2))
+                except Exception as e:
                     similarities.append(('edge', 0, 0.2))
             
             # 哈希相似度 (权重20%) - 降低权重
@@ -317,8 +331,10 @@ class WaiteTarotRecognizer:
         
         best_match = matches[0] if matches else None
         
-        # 进一步降低阈值
-        if best_match and best_match['similarity'] > 0.2:
+        # 适应性阈值：根据最佳匹配的置信度动态调整
+        adaptive_threshold = max(0.1, best_match['similarity'] * 0.7) if best_match else 0.1
+        
+        if best_match and best_match['similarity'] > adaptive_threshold:
             return {
                 'matched_card': best_match['card_name'],
                 'confidence': best_match['similarity'],
@@ -491,8 +507,190 @@ class WaiteTarotRecognizer:
         
         return image
 
+    def retrain_from_single_cards(self):
+        """从单张卡牌图片重新训练参考数据库"""
+        print("🔄 从单张卡牌图片重新训练韦特塔罗参考数据库...")
+        
+        # 单张卡牌图片目录
+        cards_dir = self.data_dir / "card_dataset" / "images" / "rider-waite-tarot"
+        
+        if not cards_dir.exists():
+            print(f"❌ 单张卡牌图片目录不存在: {cards_dir}")
+            return False
+        
+        # 获取所有图片文件
+        image_files = []
+        for ext in ['*.jpg', '*.jpeg', '*.png', '*.bmp']:
+            image_files.extend(cards_dir.glob(ext))
+            image_files.extend(cards_dir.glob(ext.upper()))
+        
+        if not image_files:
+            print(f"❌ 在 {cards_dir} 中没有找到图片文件")
+            return False
+        
+        print(f"📁 找到 {len(image_files)} 张单张卡牌图片")
+        
+        # 重新构建数据库
+        new_db = {}
+        successful_cards = 0
+        
+        for image_path in image_files:
+            # 从文件名提取卡牌名称（去掉扩展名）
+            card_name = image_path.stem
+            
+            # 过滤掉非塔罗牌图片，但保留附属牌
+            if any(keyword in card_name for keyword in ['妈妈', '孩子']) and '依恋' not in card_name:
+                print(f"⏭️  跳过非塔罗牌图片: {card_name}")
+                continue
+            
+            # 检查是否是标准78张牌之一
+            if card_name not in self.all_cards:
+                print(f"⚠️  未知卡牌名称: {card_name}")
+                continue
+            
+            # 提取特征
+            features = self.extract_card_features_from_file(str(image_path), card_name)
+            if features:
+                new_db[card_name] = features
+                successful_cards += 1
+                print(f"✅ 成功提取: {card_name}")
+            else:
+                print(f"❌ 特征提取失败: {card_name}")
+        
+        # 保存新数据库
+        if successful_cards >= 60:  # 至少60张卡牌
+            self.reference_db = new_db
+            self.save_reference_database()
+            print(f"✅ 重新训练完成: {successful_cards} 张卡牌")
+            return True
+        else:
+            print(f"❌ 重新训练失败: 只成功提取 {successful_cards} 张卡牌")
+            return False
+    
+    def extract_card_features_from_file(self, image_path: str, card_name: str) -> Dict:
+        """从单张卡牌图片文件提取特征"""
+        try:
+            # 读取图像
+            image = cv2.imread(image_path)
+            if image is None:
+                print(f"❌ 无法读取图片: {image_path}")
+                return None
+            
+            # 调整图像尺寸到标准大小
+            image = cv2.resize(image, (200, 300))
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            
+            # HSV颜色特征 - 完整图像和区域特征
+            hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+            
+            # 完整图像HSV直方图
+            hist_h = cv2.calcHist([hsv], [0], None, [50], [0, 180])
+            hist_s = cv2.calcHist([hsv], [1], None, [50], [0, 256]) 
+            hist_v = cv2.calcHist([hsv], [2], None, [50], [0, 256])
+            
+            # 区域HSV直方图 (上中下三部分)
+            h, w = hsv.shape[:2]
+            regions = [
+                hsv[0:h//3, :],          # 上部
+                hsv[h//3:2*h//3, :],     # 中部  
+                hsv[2*h//3:h, :]         # 下部
+            ]
+            
+            region_hists = []
+            for region in regions:
+                r_hist_h = cv2.calcHist([region], [0], None, [30], [0, 180])
+                r_hist_s = cv2.calcHist([region], [1], None, [30], [0, 256])
+                r_hist_v = cv2.calcHist([region], [2], None, [30], [0, 256])
+                region_hists.extend([r_hist_h.flatten(), r_hist_s.flatten(), r_hist_v.flatten()])
+            
+            # 组合颜色特征
+            color_hist = np.concatenate([
+                hist_h.flatten(), hist_s.flatten(), hist_v.flatten()
+            ] + region_hists)
+            
+            # 哈希特征 - 多种尺寸
+            pil_img = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+            hashes = {
+                'phash_8': str(imagehash.phash(pil_img, hash_size=8)),
+                'phash_16': str(imagehash.phash(pil_img, hash_size=16)),
+                'dhash_8': str(imagehash.dhash(pil_img, hash_size=8)),
+                'average_8': str(imagehash.average_hash(pil_img, hash_size=8))
+            }
+            
+            # 边缘特征
+            edges = cv2.Canny(gray, 50, 150)
+            edge_hist = cv2.calcHist([edges], [0], None, [64], [0, 256])
+            edge_density = np.sum(edges > 0) / (edges.shape[0] * edges.shape[1])
+            
+            # 简化的LBP纹理特征
+            lbp_features = self.extract_simple_lbp(gray)
+            
+            # 形状特征 - 基于边缘轮廓
+            contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            shape_circularity = 0
+            if contours:
+                largest_contour = max(contours, key=cv2.contourArea)
+                area = cv2.contourArea(largest_contour)
+                perimeter = cv2.arcLength(largest_contour, True)
+                if perimeter > 0:
+                    shape_circularity = 4 * np.pi * area / (perimeter * perimeter)
+            
+            return {
+                'card_name': card_name,
+                'hashes': hashes,
+                'color_histogram': [float(x) for x in color_hist],
+                'edge_histogram': [float(x) for x in edge_hist.flatten()],
+                'edge_density': float(edge_density),
+                'lbp_features': [float(x) for x in lbp_features],
+                'shape_circularity': float(shape_circularity),
+                'image_path': image_path,
+                'is_enhanced': True,
+                'created_at': time.strftime("%Y-%m-%d %H:%M:%S")
+            }
+            
+        except Exception as e:
+            print(f"❌ 提取 {card_name} 特征失败: {e}")
+            return None
+    
+    def extract_simple_lbp(self, gray_image: np.ndarray) -> np.ndarray:
+        """提取简化的LBP (Local Binary Pattern) 特征"""
+        try:
+            # 简单的LBP实现
+            rows, cols = gray_image.shape
+            lbp = np.zeros((rows-2, cols-2), dtype=np.uint8)
+            
+            for i in range(1, rows-1):
+                for j in range(1, cols-1):
+                    center = gray_image[i, j]
+                    binary_string = ''
+                    
+                    # 8邻域
+                    neighbors = [
+                        gray_image[i-1, j-1], gray_image[i-1, j], gray_image[i-1, j+1],
+                        gray_image[i, j+1], gray_image[i+1, j+1], gray_image[i+1, j],
+                        gray_image[i+1, j-1], gray_image[i, j-1]
+                    ]
+                    
+                    for neighbor in neighbors:
+                        binary_string += '1' if neighbor >= center else '0'
+                    
+                    lbp[i-1, j-1] = int(binary_string, 2)
+            
+            # 计算LBP直方图
+            hist, _ = np.histogram(lbp.ravel(), bins=256, range=(0, 256))
+            
+            # 归一化
+            hist = hist.astype(float)
+            hist /= (hist.sum() + 1e-7)
+            
+            return hist
+            
+        except Exception as e:
+            print(f"LBP特征提取失败: {e}")
+            return np.zeros(256)
+
     def retrain_from_grid_images(self):
-        """从网格图片重新训练参考数据库"""
+        """从网格图片重新训练参考数据库（保留作为备用方法）"""
         print("🔄 重新训练韦特塔罗参考数据库...")
         
         # 完整的78张牌列表
@@ -599,7 +797,7 @@ class WaiteTarotRecognizer:
 def retrain_database():
     """重新训练数据库的独立函数"""
     recognizer = WaiteTarotRecognizer()
-    return recognizer.retrain_from_grid_images()
+    return recognizer.retrain_from_single_cards()
 
 
 def main():
@@ -612,7 +810,7 @@ def main():
     # 如果数据库为空或卡牌数量不足，重新训练
     if len(recognizer.reference_db) < 60:
         print("📚 参考数据库不足，开始重新训练...")
-        recognizer.retrain_from_grid_images()
+        recognizer.retrain_from_single_cards()
     
     # 测试识别
     card_images_dir = Path("data/card_images")
