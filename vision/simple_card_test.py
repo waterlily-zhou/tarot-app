@@ -17,20 +17,7 @@ except ImportError:
     PREPROCESSOR_AVAILABLE = False
     print("⚠️ 图片预处理模块不可用")
 
-# 尝试导入其他模块，如果失败则跳过
-try:
-    from waite_tarot_recognizer import WaiteTarotRecognizer, retrain_database
-    LOCAL_RECOGNITION_AVAILABLE = True
-except ImportError as e:
-    print(f"⚠️ 本地识别模块导入失败: {e}")
-    LOCAL_RECOGNITION_AVAILABLE = False
 
-try:
-    from integrated_vision_system import IntegratedTarotVisionSystem
-    INTEGRATED_SYSTEM_AVAILABLE = True
-except ImportError as e:
-    print(f"⚠️ 集成系统模块导入失败: {e}")
-    INTEGRATED_SYSTEM_AVAILABLE = False
 
 
 
@@ -219,179 +206,7 @@ def gemini_card_recognition(image_path: str, api_key: str = None):
         print(f"❌ Gemini识别失败: {e}")
         return None
 
-def gemini_overlap_recognition(image_path: str, api_key: str = None):
-    """重叠分块识别策略（改进版）"""
-    try:
-        import google.generativeai as genai
-        from PIL import Image
-        import cv2
-        import tempfile
-        import shutil
-        from pathlib import Path
-        
-        if not api_key:
-            load_env_file()
-            api_key = os.getenv('GOOGLE_API_KEY')
-        
-        if not api_key:
-            print("❌ 需要Google API Key")
-            return None
-        
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        
-        print("🔄 使用重叠分块识别策略...")
-        
-        # 图片预处理：添加安全边距
-        processed_image_path = image_path
-        preprocessor = None
-        margin_size = 15
-        
-        if PREPROCESSOR_AVAILABLE:
-            preprocessor = ImagePreprocessor()
-            processed_image_path = preprocessor.add_safe_margin(image_path, margin_size=margin_size)
-            print("🖼️ 使用预处理后的图片进行分块识别")
-        else:
-            print("⚠️ 跳过图片预处理")
-        
-        img = cv2.imread(processed_image_path)
-        h, w = img.shape[:2]
-        
-        # 分块参数
-        n_blocks = 3
-        overlap = 0.25  # 35%重叠，确保边界卡牌不被遗漏
-        step = int(w * (1 - overlap) / (n_blocks - 1)) if n_blocks > 1 else w
-        block_width = int(w / n_blocks * (1 + overlap))
-        
-        results = {}
-        temp_dir = Path(tempfile.mkdtemp())
-        
-        try:
-            print(f"🔪 分成 {n_blocks} 块，每块宽度 {block_width}px，重叠 {int(overlap*100)}%")
-            
-            for i in range(n_blocks):
-                start = max(0, i * step)
-                end = min(w, start + block_width)
-                
-                sub = img[:, start:end]
-                block_path = temp_dir / f"block_{i}.jpg"
-                cv2.imwrite(str(block_path), sub)
-                
-                # 同时保存到当前目录供查看
-                debug_path = f"debug_block_{i+1}.jpg"
-                cv2.imwrite(debug_path, sub)
-                print(f"   已保存调试图片: {debug_path}")
-                
-                print(f"📦 处理第 {i+1} 块 ({start}-{end}px)...")
-                
-                # 强化方向识别的提示词
-                prompt = """
-                请识别这张图片中的塔罗牌，必须使用标准中文名称。
-                
-                🎯 重要：必须准确判断每张卡牌的方向（正位/逆位）
-                
-                🎯 正逆位识别标准（按优先级顺序）：
-                
-                **第一优先级：标题区域位置**
-                - 卡牌标题（如"THE HANGED MAN"）在下方 → 正位
-                - 卡牌标题在上方 → 逆位
-                
-                **第二优先级：罗马数字位置**
-                - 罗马数字（如XII、VIII）在上方 → 正位  
-                - 罗马数字在下方 → 逆位
-                
-                **第三优先级：备用判断方法**
-                - 人物头部朝上 → 正位（⚠️ 倒吊人除外：倒吊人头部朝下时为正位）
-                - 人物头部朝下 → 逆位（倒吊人除外）
-                - 韦特签名在右下角 → 正位
-                - 韦特签名在左上角 → 逆位
-                
-                **第四优先级：元素方向**
-                - 星币、圣杯等器物开口朝上 → 正位
-                - 权杖叶子朝上、握柄朝下 → 正位
-                
-                标准名称：
-                - 数字牌：权杖一到权杖十、圣杯一到圣杯十、宝剑一到宝剑十、星币一到星币十
-                - 宫廷牌：各花色的侍从、骑士、皇后、国王 (如：星币皇后、圣杯国王)
-                - 大阿卡纳：愚人、魔法师、女祭司、皇后、皇帝、教皇、恋人、战车、力量、隐士、命运之轮、正义、倒吊人、死神、节制、恶魔、高塔、星星、月亮、太阳、审判、世界
-                
-                ⚠️ 严格要求：
-                - 星币十 ✅（不是"十号星币"）
-                - 星币皇后 ✅（不是"星币女王"）
-                - 必须准确标注：正位/逆位
-                
-                输出格式：卡牌名称,正位/逆位
-                
-                例如：
-                权杖五,正位
-                圣杯国王,逆位
-                星币十,正位
-                星币皇后,逆位
-                
-                请识别所有可见的卡牌：
-                """
-                
-                try:
-                    response = model.generate_content([prompt, Image.open(block_path)])
-                    block_result = response.text.strip()
-                    print(f"   识别到: {block_result.replace(chr(10), ' | ')}")
-                    
-                    # 解析结果
-                    for line in block_result.splitlines():
-                        line = line.strip()
-                        if (line and ',' in line and 
-                            not any(skip_word in line for skip_word in ['以下', '识别', '图片', '结果']) and
-                            len(line) < 50):  # 过滤说明文字
-                            
-                            parts = [p.strip() for p in line.split(',')]
-                            if len(parts) >= 2:
-                                card_name = parts[0]
-                                orientation = parts[1]
-                                
-                                if (card_name and orientation and 
-                                    ('正位' in orientation or '逆位' in orientation)):
-                                    
-                                    key = (card_name, orientation)
-                                    if key not in results:  # 简单去重
-                                        results[key] = f"块{i+1}"
-                                        
-                except Exception as e:
-                    print(f"   ⚠️ 第{i+1}块识别失败: {e}")
-                    
-        finally:
-            shutil.rmtree(temp_dir)
-        
-        # 智能去重和格式化输出
-        if results:
-            print(f"\n✅ 重叠分块识别完成，共找到 {len(results)} 张卡牌:")
-            
-            # 转换为标准格式
-            cards = []
-            for (card_name, orientation), source in results.items():
-                cards.append({
-                    'card_name': card_name,
-                    'orientation': orientation,
-                    'position': f"({source})",
-                    'order': len(cards) + 1
-                })
-                print(f"   • {card_name} ({orientation}) - 来源: {source}")
-            
-            # 如果使用了预处理，清理临时文件（注意：分块识别没有精确坐标需要调整）
-            if PREPROCESSOR_AVAILABLE and preprocessor:
-                print("🧹 清理预处理临时文件...")
-                preprocessor.cleanup_temp_files()
-            
-            return cards
-        else:
-            print("❌ 未识别到任何卡牌")
-            # 清理临时文件
-            if PREPROCESSOR_AVAILABLE and preprocessor:
-                preprocessor.cleanup_temp_files()
-            return None
-            
-    except Exception as e:
-        print(f"❌ 重叠分块识别出错: {e}")
-        return None
+
 
 
 def gemini_precise_recognition(image_path: str):
@@ -574,14 +389,13 @@ def gemini_recognition_test():
     # 让用户选择识别策略
     print("\n请选择识别策略：")
     print("1. 🎯 单图识别 (简洁快速)")
-    print("2. 🔄 重叠分块识别 (更全面，可能找到更多卡牌)")
-    print("3. 🔍 边缘遗漏分析 (对比完整识别vs右侧20%裁剪)")
+    print("2. 🔍 边缘遗漏分析 (对比完整识别vs右侧20%裁剪)")
     
     while True:
-        choice = input("请选择 (1-3): ").strip()
-        if choice in ['1', '2', '3']:
+        choice = input("请选择 (1-2): ").strip()
+        if choice in ['1', '2']:
             break
-        print("❌ 请输入1、2或3")
+        print("❌ 请输入1或2")
     
     if not Path(image_path).exists():
         print(f"❌ 图片不存在: {image_path}")
@@ -591,8 +405,6 @@ def gemini_recognition_test():
     if choice == '1':
         recognized_cards = gemini_card_recognition(image_path)
     elif choice == '2':
-        recognized_cards = gemini_overlap_recognition(image_path)
-    else:
         recognized_cards = gemini_edge_detection(image_path)
         return recognized_cards  # 边缘检测直接返回
     
@@ -603,168 +415,22 @@ def gemini_recognition_test():
     
     return recognized_cards
 
-def hybrid_reading_demo():
-    """完整演示：Gemini识别 + 本地AI解读"""
-    print("🌟 完整塔罗AI系统演示")
-    print("🌐 在线识别 + 🤖 本地解读")
-    print("="*45)
-    
-    # 1. Gemini识别
-    cards = gemini_recognition_test()
-    
-    if not cards:
-        print("❌ 识别失败，演示结束")
-        return
-    
-    # 2. 本地AI解读
-    print(f"\n🤖 开始本地AI解读...")
-    if INTEGRATED_SYSTEM_AVAILABLE:
-        try:
-            from tarot_ai_system import TarotAISystem
-            
-            ai_system = TarotAISystem()
-            
-            # 转换格式
-            card_names = [card['card_name'] for card in cards]
-            
-            # 生成解读
-            result = ai_system.generate_reading(
-                cards=card_names,
-                question="请结合我的个人课程笔记和星盘信息，为这个塔罗牌摊进行专业解读",
-                user_id="mel"
-            )
-            
-            if result.get('interpretation'):
-                print(f"\n🔮 专业AI解读:")
-                print("="*50)
-                print(result['interpretation'])
-                print("="*50)
-                print(f"✅ 解读完成，已保存到本地数据库")
-            else:
-                print("❌ AI解读失败")
-                
-        except Exception as e:
-            print(f"❌ 本地AI解读失败: {e}")
-            print("💡 请确保Ollama和本地LLM正常运行")
-    else:
-        print("❌ 本地AI系统不可用，请安装缺少的依赖")
 
-def simple_card_recognition_test():
-    """本地卡牌识别测试（旧版本）"""
-    if not LOCAL_RECOGNITION_AVAILABLE:
-        print("❌ 本地识别系统不可用")
-        return
-        
-    print("🎴 本地韦特塔罗识别测试")
-    print("="*35)
-    
-    recognizer = WaiteTarotRecognizer()
-    image_path = "data/card_images/spread_0_4821735726296_.pic.jpg"
-    
-    if not Path(image_path).exists():
-        print(f"❌ 图片不存在: {image_path}")
-        return
-    
-    image = cv2.imread(image_path)
-    card_regions = recognizer.detect_card_regions(image)
-    print(f"检测到 {len(card_regions)} 个卡牌区域")
-    
-    recognized_cards = []
-    for i, region in enumerate(card_regions, 1):
-        card_roi, is_upside_down = recognizer.extract_card_roi(image, region)
-        match_result = recognizer.match_card_to_reference(card_roi)
-        
-        if match_result.get('all_matches'):
-            best_match = match_result['all_matches'][0]
-            orientation = "逆位" if is_upside_down else "正位"
-            print(f"{i:2d}. {best_match['card_name']} ({orientation}) - 置信度: {best_match['similarity']:.3f}")
-            recognized_cards.append({
-                'card_name': best_match['card_name'],
-                'orientation': orientation,
-                'confidence': best_match['similarity']
-            })
-    
-    print(f"\n总结: 本地识别 {len(recognized_cards)} 张卡牌")
-
-def retrain_with_attachments():
-    """重新训练，包含依恋附属牌"""
-    if not LOCAL_RECOGNITION_AVAILABLE:
-        print("❌ 本地识别系统不可用")
-        return False
-        
-    print("🔄 重新训练本地识别模型（包含依恋附属牌）...")
-    
-    # 修改依恋牌名称映射
-    attachment_cards = ["22依恋", "23母子"]
-    print(f"📌 将包含以下依恋附属牌: {', '.join(attachment_cards)}")
-    
-    if retrain_database():
-        print("✅ 训练完成（包含80张卡牌）")
-        return True
-    else:
-        print("❌ 训练失败")
-        return False
-
-def check_api_key_status():
-    """检查API Key状态"""
-    load_env_file()
-    api_key = os.getenv('GOOGLE_API_KEY')
-    
-    if api_key:
-        masked_key = api_key[:8] + "*" * (len(api_key) - 16) + api_key[-8:] if len(api_key) > 16 else "****"
-        print(f"✅ API Key已配置: {masked_key}")
-        return True
-    else:
-        print("❌ 未找到API Key")
-        print("💡 请在.env.local文件中设置: GOOGLE_API_KEY=你的API密钥")
-        return False
 
 def interactive_menu():
     """交互式菜单"""
     while True:
-        print("\n🎯 韦特塔罗AI系统 v2.0 (Gemini版)")
-        print("="*45)
-        print("1. 🌐 Gemini在线识别测试 (推荐)")
-        print("2. 🌟 完整演示 (Gemini识别+本地解读)")
-        print("3. 🔧 本地识别测试 (准确率低)")
-        print("4. 🔄 重新训练本地模型")
-        print("5. 🔑 检查API Key状态")
-        print("6. 📊 查看系统状态")
-        print("7. ❓ 获取API Key帮助")
-        print("8. 🚪 退出")
+        print("\n🎯 塔罗牌识别系统 (简化版)")
+        print("="*35)
+        print("1. 🔮 开始识别")
+        print("2. 🚪 退出")
         
-        choice = input("\n请选择 (1-8): ").strip()
+        choice = input("\n请选择 (1-2): ").strip()
         
         if choice == "1":
             gemini_recognition_test()
         elif choice == "2":
-            hybrid_reading_demo()
-        elif choice == "3":
-            simple_card_recognition_test()
-        elif choice == "4":
-            retrain_with_attachments()
-        elif choice == "5":
-            check_api_key_status()
-        elif choice == "6":
-            print(f"\n📊 系统状态:")
-            print(f"   🌐 在线识别: Google Gemini Vision")
-            print(f"   🔧 本地识别: {'✅ 可用' if LOCAL_RECOGNITION_AVAILABLE else '❌ 不可用'}")
-            print(f"   🤖 集成系统: {'✅ 可用' if INTEGRATED_SYSTEM_AVAILABLE else '❌ 不可用'}")
-            if LOCAL_RECOGNITION_AVAILABLE:
-                recognizer = WaiteTarotRecognizer()
-                print(f"   📚 本地数据库: {len(recognizer.reference_db)} 张卡牌")
-            print(f"   🔒 隐私保护: 本地解读，在线仅识别")
-        elif choice == "7":
-            print(f"\n📖 获取Google API Key:")
-            print(f"   1. 访问: https://makersuite.google.com/app/apikey")
-            print(f"   2. 登录Google账号")
-            print(f"   3. 点击'Create API Key'")
-            print(f"   4. 复制API Key")
-            print(f"   5. 在项目根目录创建.env.local文件")
-            print(f"   6. 在文件中添加: GOOGLE_API_KEY=你的API密钥")
-            print(f"   💰 免费额度: 每天1500次调用")
-        elif choice == "8":
-            print("👋 感谢使用韦特塔罗AI系统")
+            print("👋 感谢使用塔罗牌识别系统")
             break
         else:
             print("❌ 无效选择，请重新输入")
