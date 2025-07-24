@@ -23,7 +23,7 @@ IMG = "data/card_images/spread_0_4821735726296_.pic.jpg"
 N_BLOCKS = 3
 TMP_DIR = Path("tmp_blocks")
 TMP_DIR.mkdir(exist_ok=True)
-API = os.getenv("GEMINIAPI")
+API = os.getenv("GOOGLE_API_KEY")
 genai.configure(api_key=API)
 model = genai.GenerativeModel("gemini-1.5-flash")
 

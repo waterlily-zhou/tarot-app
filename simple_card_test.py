@@ -8,6 +8,15 @@ import cv2
 from pathlib import Path
 import os
 
+# 导入图片预处理模块
+try:
+    from image_preprocessor import ImagePreprocessor
+    PREPROCESSOR_AVAILABLE = True
+    print("✅ 图片预处理模块已加载")
+except ImportError:
+    PREPROCESSOR_AVAILABLE = False
+    print("⚠️ 图片预处理模块不可用")
+
 # 尝试导入其他模块，如果失败则跳过
 try:
     from waite_tarot_recognizer import WaiteTarotRecognizer, retrain_database
@@ -44,29 +53,48 @@ def gemini_card_recognition(image_path: str, api_key: str = None):
         
         if not api_key:
             load_env_file()
-            api_key = os.getenv('GEMINIAPI')
+            api_key = os.getenv('GOOGLE_API_KEY')
         
         if not api_key:
             print("❌ 需要Google API Key")
-            print("💡 请在.env.local文件中设置: GEMINIAPI=你的API密钥")
+            print("💡 请在.env.local文件中设置: GOOGLE_API_KEY=你的API密钥")
             return None
         
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel('gemini-1.5-flash')
         
-        # 使用原图
-        img = Image.open(image_path)
+        # 图片预处理：添加安全边距
+        processed_image_path = image_path
+        preprocessor = None
+        
+        if PREPROCESSOR_AVAILABLE:
+            preprocessor = ImagePreprocessor()
+            # 增大边距，尝试捕获更多边缘卡牌
+            processed_image_path = preprocessor.add_safe_margin(image_path, margin_size=30)
+            print("🖼️ 使用预处理后的图片进行识别（30px边距）")
+        else:
+            print("⚠️ 跳过图片预处理")
+        
+        # 使用预处理后的图片
+        img = Image.open(processed_image_path)
         
         prompt = """
         请仔细扫描这张塔罗牌阵图片，识别所有可见的塔罗牌。
 
-        🔍 扫描策略：
-        1. 系统性扫描整个图片，包括所有边缘区域
-        2. 从图片中心开始、顺时针向外扩张
-        3. 特别注意最右、最左、最上、最下边缘
-        4. 识别所有可见的卡牌
+        🔍 完整扫描策略（必须按顺序执行）：
+        1. **角落优先**：左上角→右上角→右下角→左下角（即使只露出一角也要识别）
+        2. **边缘完整**：上边缘→右边缘→下边缘→左边缘（包括半张卡牌）  
+        3. **中心区域**：从中心向外螺旋扫描
+        4. **二次确认**：重新检查是否有遗漏的边缘卡牌
+        5. **最终验证**：确保图片每个区域都被检查过
 
-        ⚠️ 重要提醒：不要遗漏右侧角落和边缘的卡牌
+        🚨 关键要求：
+        - 图片边缘的卡牌绝对不能遗漏！
+        - 即使卡牌被裁切、只露出一部分也必须识别
+        - 特别注意图片最边缘和角落区域
+        - 宁可多识别也不要遗漏
+        - 扫描范围必须覆盖整个图片的100%区域
+        
 
         韦特塔罗标准名称（必须严格使用）：
         
@@ -87,15 +115,16 @@ def gemini_card_recognition(image_path: str, api_key: str = None):
         
         📋 附属牌(2张)：
         22依恋、23母子
-
+        
         ⚠️ 重要要求：
-        1. 必须严格使用上述标准名称，不得使用变体名称
-        2. 错误示例：星币女王❌ → 正确：星币皇后✅
-        3. 错误示例：十号星币❌ → 正确：星币十✅
-        4. 错误示例：圣杯国王❌ → 正确：圣杯国王✅（这个是正确的）
-        5. 判断正位或逆位
-        6. 标注坐标位置
-        7. 只输出识别结果，不要解读
+        1. 请多留意牌面的罗马数字作为参考，通常在正位牌面上方、逆位牌面下方
+        2. 必须严格使用上述标准名称，不得使用变体名称
+        3. 错误示例：星币女王❌ → 正确：星币皇后✅
+        4. 错误示例：十号星币❌ → 正确：星币十✅
+        5. 错误示例：圣杯国王❌ → 正确：圣杯国王✅（这个是正确的）
+        6. 判断正位或逆位
+        7. 标注坐标位置
+        8. 只输出识别结果，不要解读
 
         输出格式(每行一张牌)：
         卡牌名称,正位/逆位,坐标位置(x, y)
@@ -170,6 +199,14 @@ def gemini_card_recognition(image_path: str, api_key: str = None):
             else:
                 print(f"\n⚠️ 未识别到任何卡牌")
             
+            # 如果使用了预处理，需要调整坐标
+            if PREPROCESSOR_AVAILABLE and preprocessor:
+                print("🔄 调整坐标以匹配原始图片...")
+                # 注意：网格坐标可能不需要调整，先检查坐标类型
+                cards = preprocessor.process_recognition_result(cards, margin_size=30)
+                # 清理临时文件
+                preprocessor.cleanup_temp_files()
+            
             return cards
         else:
             print("❌ Gemini无法识别此图片")
@@ -194,7 +231,7 @@ def gemini_overlap_recognition(image_path: str, api_key: str = None):
         
         if not api_key:
             load_env_file()
-            api_key = os.getenv('GEMINIAPI')
+            api_key = os.getenv('GOOGLE_API_KEY')
         
         if not api_key:
             print("❌ 需要Google API Key")
@@ -205,12 +242,24 @@ def gemini_overlap_recognition(image_path: str, api_key: str = None):
         
         print("🔄 使用重叠分块识别策略...")
         
-        img = cv2.imread(image_path)
+        # 图片预处理：添加安全边距
+        processed_image_path = image_path
+        preprocessor = None
+        margin_size = 15
+        
+        if PREPROCESSOR_AVAILABLE:
+            preprocessor = ImagePreprocessor()
+            processed_image_path = preprocessor.add_safe_margin(image_path, margin_size=margin_size)
+            print("🖼️ 使用预处理后的图片进行分块识别")
+        else:
+            print("⚠️ 跳过图片预处理")
+        
+        img = cv2.imread(processed_image_path)
         h, w = img.shape[:2]
         
         # 分块参数
         n_blocks = 3
-        overlap = 0.35  # 35%重叠，确保边界卡牌不被遗漏
+        overlap = 0.25  # 35%重叠，确保边界卡牌不被遗漏
         step = int(w * (1 - overlap) / (n_blocks - 1)) if n_blocks > 1 else w
         block_width = int(w / n_blocks * (1 + overlap))
         
@@ -235,9 +284,31 @@ def gemini_overlap_recognition(image_path: str, api_key: str = None):
                 
                 print(f"📦 处理第 {i+1} 块 ({start}-{end}px)...")
                 
-                # 标准化的提示词
+                # 强化方向识别的提示词
                 prompt = """
                 请识别这张图片中的塔罗牌，必须使用标准中文名称。
+                
+                🎯 重要：必须准确判断每张卡牌的方向（正位/逆位）
+                
+                🎯 正逆位识别标准（按优先级顺序）：
+                
+                **第一优先级：标题区域位置**
+                - 卡牌标题（如"THE HANGED MAN"）在下方 → 正位
+                - 卡牌标题在上方 → 逆位
+                
+                **第二优先级：罗马数字位置**
+                - 罗马数字（如XII、VIII）在上方 → 正位  
+                - 罗马数字在下方 → 逆位
+                
+                **第三优先级：备用判断方法**
+                - 人物头部朝上 → 正位（⚠️ 倒吊人除外：倒吊人头部朝下时为正位）
+                - 人物头部朝下 → 逆位（倒吊人除外）
+                - 韦特签名在右下角 → 正位
+                - 韦特签名在左上角 → 逆位
+                
+                **第四优先级：元素方向**
+                - 星币、圣杯等器物开口朝上 → 正位
+                - 权杖叶子朝上、握柄朝下 → 正位
                 
                 标准名称：
                 - 数字牌：权杖一到权杖十、圣杯一到圣杯十、宝剑一到宝剑十、星币一到星币十
@@ -247,6 +318,7 @@ def gemini_overlap_recognition(image_path: str, api_key: str = None):
                 ⚠️ 严格要求：
                 - 星币十 ✅（不是"十号星币"）
                 - 星币皇后 ✅（不是"星币女王"）
+                - 必须准确标注：正位/逆位
                 
                 输出格式：卡牌名称,正位/逆位
                 
@@ -254,7 +326,7 @@ def gemini_overlap_recognition(image_path: str, api_key: str = None):
                 权杖五,正位
                 圣杯国王,逆位
                 星币十,正位
-                星币皇后,正位
+                星币皇后,逆位
                 
                 请识别所有可见的卡牌：
                 """
@@ -304,15 +376,179 @@ def gemini_overlap_recognition(image_path: str, api_key: str = None):
                 })
                 print(f"   • {card_name} ({orientation}) - 来源: {source}")
             
+            # 如果使用了预处理，清理临时文件（注意：分块识别没有精确坐标需要调整）
+            if PREPROCESSOR_AVAILABLE and preprocessor:
+                print("🧹 清理预处理临时文件...")
+                preprocessor.cleanup_temp_files()
+            
             return cards
         else:
             print("❌ 未识别到任何卡牌")
+            # 清理临时文件
+            if PREPROCESSOR_AVAILABLE and preprocessor:
+                preprocessor.cleanup_temp_files()
             return None
             
     except Exception as e:
         print(f"❌ 重叠分块识别出错: {e}")
         return None
 
+
+def gemini_precise_recognition(image_path: str):
+    """精确识别单张或少量卡牌"""
+    try:
+        import google.generativeai as genai
+        from PIL import Image
+        
+        load_env_file()
+        api_key = os.getenv('GOOGLE_API_KEY')
+        if not api_key:
+            print("❌ 需要Google API Key")
+            print("💡 请在.env.local文件中设置: GOOGLE_API_KEY=你的API密钥")
+            return None
+            
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        
+        img = Image.open(image_path)
+        
+        # 精确识别提示词，强调数字和细节
+        prompt = """
+        请精确识别这张图片中的塔罗牌。这可能是裁剪后的图片，请特别注意：
+
+        🔢 **数字牌识别重点**：
+        - 仔细数星币、圣杯、权杖、宝剑的具体数量
+        - 不要猜测，要根据实际看到的符号数量
+        - 星币7: 7个星币符号，通常一个人看着星币树
+        - 星币10: 10个星币符号，通常有家庭场景
+        - 其他数字牌也请准确计数
+
+        🎯 **识别标准**：
+        1. 首先数符号数量（最重要！）
+        2. 观察人物和场景
+        3. 确认正逆位
+        4. 如果看不清楚，请说"无法确定"
+
+        📝 **输出格式**：
+        卡牌名称,正位/逆位
+
+        请开始识别：
+        """
+        
+        response = model.generate_content([prompt, img])
+        response_text = response.text.strip()
+        
+        print(f"🤖 Gemini精确识别结果: {response_text}")
+        
+        # 解析结果
+        cards = []
+        if response_text and "无法" not in response_text:
+            lines = [line.strip() for line in response_text.split('\n') if line.strip()]
+            
+            for i, line in enumerate(lines):
+                if ',' in line:
+                    parts = line.split(',')
+                    if len(parts) >= 2:
+                        card_name = parts[0].strip()
+                        orientation = parts[1].strip()
+                        
+                        cards.append({
+                            'card_name': card_name,
+                            'orientation': orientation,
+                            'position': f"(0, 0)",  # 裁剪图片无精确坐标
+                            'order': i + 1
+                        })
+        
+        return cards if cards else None
+        
+    except Exception as e:
+        print(f"❌ Gemini精确识别失败: {e}")
+        return None
+
+def gemini_edge_detection(image_path: str):
+    """完整边缘检测分析"""
+    if not PREPROCESSOR_AVAILABLE:
+        print("❌ 图片预处理模块不可用")
+        return None
+        
+    preprocessor = ImagePreprocessor()
+    
+    print("🔍 完整边缘检测分析")
+    print("=" * 40)
+    
+    # 1. 先进行完整图片识别
+    print("1️⃣ 完整图片识别...")
+    full_cards = gemini_card_recognition(image_path)
+    
+    if full_cards:
+        print(f"✅ 完整图片识别到 {len(full_cards)} 张卡牌")
+        full_card_names = [card['card_name'] for card in full_cards]
+    else:
+        print("❌ 完整图片识别失败")
+        return None
+    
+    # 2. 右侧边缘检测  
+    print(f"\n2️⃣ 右侧边缘检测...")
+    right_crop = preprocessor.crop_right_edge(image_path, crop_percentage=0.2)
+    
+    # 使用专门的边缘识别提示词
+    print("🔍 使用高精度识别...")
+    right_cards = gemini_precise_recognition(right_crop)
+    
+    # 3. 分析对比结果
+    print(f"\n📊 对比分析:")
+    print(f"完整识别: {len(full_cards)} 张")
+    print(f"右侧边缘: {len(right_cards) if right_cards else 0} 张")
+    
+    if right_cards:
+        right_card_names = [card['card_name'] for card in right_cards]
+        
+        # 找出右侧边缘特有的卡牌
+        new_cards = [name for name in right_card_names if name not in full_card_names]
+        common_cards = [name for name in right_card_names if name in full_card_names]
+        
+        print(f"\n🎴 右侧边缘精确识别结果:")
+        for card in right_cards:
+            status = "🆕 新发现" if card['card_name'] in new_cards else "✅ 已识别"
+            print(f"  • {card['card_name']} ({card['orientation']}) - {status}")
+        
+        if new_cards:
+            print(f"\n🚨 可能遗漏的卡牌 ({len(new_cards)} 张):")
+            for card_name in new_cards:
+                print(f"  🆕 {card_name}")
+            print(f"\n💡 建议: 完整图片可能遗漏了右侧的 {len(new_cards)} 张卡牌")
+        else:
+            print(f"\n✅ 右侧边缘没有发现新卡牌，完整识别较为准确")
+            
+        if common_cards:
+            print(f"\n🔄 重复识别的卡牌: {len(common_cards)} 张")
+            
+        print(f"\n⚠️ **关于识别准确性**:")
+        print(f"Gemini Vision是预训练模型，我们无法训练它。识别错误可能因为:")
+        print(f"- 裁剪后图片质量下降")
+        print(f"- 相似卡牌的视觉混淆（如星币7 vs 星币10）")
+        print(f"- 角度、光线、分辨率影响")
+        print(f"- 请对照裁剪图片手动验证识别结果")
+    else:
+        print(f"\n✅ 右侧边缘未发现卡牌")
+    
+    # 显示裁剪图片位置
+    print(f"\n📁 裁剪图片已保存: {right_crop}")
+    
+    # 等待用户查看后再清理
+    input("按回车键清理临时文件...")
+    preprocessor.cleanup_temp_files()
+    
+    return {
+        'full_cards': full_cards,
+        'right_cards': right_cards,
+        'cropped_image_path': right_crop,
+        'analysis': {
+            'full_count': len(full_cards),
+            'right_count': len(right_cards) if right_cards else 0,
+            'potential_missing': len([name for name in (right_card_names if right_cards else []) if name not in full_card_names])
+        }
+    }
 
 def gemini_recognition_test():
     """Gemini在线识别测试"""
@@ -339,12 +575,13 @@ def gemini_recognition_test():
     print("\n请选择识别策略：")
     print("1. 🎯 单图识别 (简洁快速)")
     print("2. 🔄 重叠分块识别 (更全面，可能找到更多卡牌)")
+    print("3. 🔍 边缘遗漏分析 (对比完整识别vs右侧20%裁剪)")
     
     while True:
-        choice = input("请选择 (1-2): ").strip()
-        if choice in ['1', '2']:
+        choice = input("请选择 (1-3): ").strip()
+        if choice in ['1', '2', '3']:
             break
-        print("❌ 请输入1或2")
+        print("❌ 请输入1、2或3")
     
     if not Path(image_path).exists():
         print(f"❌ 图片不存在: {image_path}")
@@ -353,8 +590,11 @@ def gemini_recognition_test():
     # 根据选择使用不同策略
     if choice == '1':
         recognized_cards = gemini_card_recognition(image_path)
-    else:
+    elif choice == '2':
         recognized_cards = gemini_overlap_recognition(image_path)
+    else:
+        recognized_cards = gemini_edge_detection(image_path)
+        return recognized_cards  # 边缘检测直接返回
     
     if recognized_cards:
         print(f"\n🎴 解析后的卡牌列表 ({len(recognized_cards)} 张):")
@@ -468,7 +708,7 @@ def retrain_with_attachments():
 def check_api_key_status():
     """检查API Key状态"""
     load_env_file()
-    api_key = os.getenv('GEMINIAPI')
+    api_key = os.getenv('GOOGLE_API_KEY')
     
     if api_key:
         masked_key = api_key[:8] + "*" * (len(api_key) - 16) + api_key[-8:] if len(api_key) > 16 else "****"
@@ -476,7 +716,7 @@ def check_api_key_status():
         return True
     else:
         print("❌ 未找到API Key")
-        print("💡 请在.env.local文件中设置: GEMINIAPI=你的API密钥")
+        print("💡 请在.env.local文件中设置: GOOGLE_API_KEY=你的API密钥")
         return False
 
 def interactive_menu():
@@ -487,7 +727,7 @@ def interactive_menu():
         print("1. 🌐 Gemini在线识别测试 (推荐)")
         print("2. 🌟 完整演示 (Gemini识别+本地解读)")
         print("3. 🔧 本地识别测试 (准确率低)")
-        print("4. 🔄 重新训练本地模型(含依恋牌)")
+        print("4. 🔄 重新训练本地模型")
         print("5. 🔑 检查API Key状态")
         print("6. 📊 查看系统状态")
         print("7. ❓ 获取API Key帮助")
@@ -521,7 +761,7 @@ def interactive_menu():
             print(f"   3. 点击'Create API Key'")
             print(f"   4. 复制API Key")
             print(f"   5. 在项目根目录创建.env.local文件")
-            print(f"   6. 在文件中添加: GEMINIAPI=你的API密钥")
+            print(f"   6. 在文件中添加: GOOGLE_API_KEY=你的API密钥")
             print(f"   💰 免费额度: 每天1500次调用")
         elif choice == "8":
             print("👋 感谢使用韦特塔罗AI系统")
