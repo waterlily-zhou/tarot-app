@@ -129,13 +129,15 @@ class ImagePreprocessor:
     
     def process_recognition_result(self, 
                                  recognition_result: list, 
-                                 margin_size: int = 15) -> list:
+                                 margin_size: int = 15,
+                                 silent: bool = False) -> list:
         """
         处理识别结果，调整坐标以匹配原始图片
         
         Args:
             recognition_result: 识别结果列表
             margin_size: 添加的边距大小
+            silent: 是否静默模式
             
         Returns:
             调整后的识别结果
@@ -143,7 +145,7 @@ class ImagePreprocessor:
         processed_result = []
         
         # 检测坐标类型（网格坐标 vs 像素坐标）
-        coord_type = self._detect_coordinate_type(recognition_result)
+        coord_type = self._detect_coordinate_type(recognition_result, silent=silent)
         
         for card in recognition_result:
             card_copy = card.copy()
@@ -157,7 +159,8 @@ class ImagePreprocessor:
                     # 网格坐标：不需要调整，保持原样
                     adjusted_x = x
                     adjusted_y = y
-                    print(f"🔄 网格坐标保持: {card['card_name']} {position}")
+                    if not silent:
+                        print(f"🔄 网格坐标保持: {card['card_name']} {position}")
                 else:
                     # 像素坐标：需要减去边距偏移
                     adjusted_x = x - margin_size
@@ -167,7 +170,8 @@ class ImagePreprocessor:
                     adjusted_x = max(0, adjusted_x)
                     adjusted_y = max(0, adjusted_y)
                     
-                    print(f"🔄 像素坐标调整: {card['card_name']} {position} → ({adjusted_x}, {adjusted_y})")
+                    if not silent:
+                        print(f"🔄 像素坐标调整: {card['card_name']} {position} → ({adjusted_x}, {adjusted_y})")
                 
                 # 更新位置信息
                 card_copy['position'] = f"({adjusted_x}, {adjusted_y})"
@@ -176,12 +180,13 @@ class ImagePreprocessor:
         
         return processed_result
     
-    def _detect_coordinate_type(self, recognition_result: list) -> str:
+    def _detect_coordinate_type(self, recognition_result: list, silent: bool = False) -> str:
         """
         检测坐标类型：网格坐标还是像素坐标
         
         Args:
             recognition_result: 识别结果列表
+            silent: 是否静默模式
             
         Returns:
             "grid" 或 "pixel"
@@ -197,10 +202,12 @@ class ImagePreprocessor:
         
         # 如果最大坐标 <= 10，很可能是网格坐标
         if max_coord <= 10:
-            print(f"🔍 检测到网格坐标系（最大值: {max_coord}）")
+            if not silent:
+                print(f"🔍 检测到网格坐标系（最大值: {max_coord}）")
             return "grid"
         else:
-            print(f"🔍 检测到像素坐标系（最大值: {max_coord}）")
+            if not silent:
+                print(f"🔍 检测到像素坐标系（最大值: {max_coord}）")
             return "pixel"
     
     def cleanup_temp_files(self):
@@ -208,17 +215,18 @@ class ImagePreprocessor:
         try:
             for temp_file in self.temp_dir.glob("*_with_margin.*"):
                 temp_file.unlink()
-            print("🧹 临时文件已清理")
+
         except Exception as e:
             print(f"⚠️ 清理临时文件时出错: {e}")
     
-    def crop_right_edge(self, image_path: str, crop_percentage: float = 0.2) -> str:
+    def crop_right_edge(self, image_path: str, crop_percentage: float = 0.2, silent: bool = False) -> str:
         """
         裁剪图片右侧区域用于单独识别
         
         Args:
             image_path: 原图片路径
             crop_percentage: 裁剪百分比，0.2表示右侧20%
+            silent: 是否静默模式
             
         Returns:
             裁剪后的图片路径
@@ -239,14 +247,46 @@ class ImagePreprocessor:
             output_path = self.temp_dir / f"{original_name}_right_{int(crop_percentage*100)}pct.jpg"
             cropped_image.save(output_path, "JPEG", quality=100, optimize=False)
             
-            print(f"✂️ 已裁剪右侧{int(crop_percentage*100)}%: {width}x{height} → {cropped_image.size}")
-            print(f"📁 裁剪图片: {output_path}")
+            if not silent:
+                print(f"✂️ 已裁剪右侧{int(crop_percentage*100)}%: {width}x{height} → {cropped_image.size}")
+                print(f"📁 裁剪图片: {output_path}")
             
             return str(output_path)
             
         except Exception as e:
-            print(f"❌ 图片裁剪失败: {e}")
+            if not silent:
+                print(f"❌ 图片裁剪失败: {e}")
             return image_path
+
+    def convert_to_center_coordinates(self, x: int, y: int, image_width: int, image_height: int) -> tuple:
+        """
+        将左上角坐标系转换为中心坐标系
+        
+        Args:
+            x, y: 左上角坐标系的坐标
+            image_width, image_height: 图片尺寸
+            
+        Returns:
+            (center_x, center_y): 中心坐标系的坐标
+        """
+        center_x = x - image_width // 2
+        center_y = y - image_height // 2
+        return (center_x, center_y)
+    
+    def convert_from_center_coordinates(self, center_x: int, center_y: int, image_width: int, image_height: int) -> tuple:
+        """
+        将中心坐标系转换为左上角坐标系
+        
+        Args:
+            center_x, center_y: 中心坐标系的坐标
+            image_width, image_height: 图片尺寸
+            
+        Returns:
+            (x, y): 左上角坐标系的坐标
+        """
+        x = center_x + image_width // 2
+        y = center_y + image_height // 2
+        return (x, y)
 
     def get_image_info(self, image_path: str) -> dict:
         """获取图片信息"""

@@ -32,7 +32,7 @@ def load_env_file():
                     key, value = line.split('=', 1)
                     os.environ[key.strip()] = value.strip()
 
-def gemini_card_recognition(image_path: str, api_key: str = None):
+def gemini_card_recognition(image_path: str, api_key: str = None, silent: bool = False):
     """Gemini Vision塔罗牌识别函数"""
     try:
         import google.generativeai as genai
@@ -58,12 +58,18 @@ def gemini_card_recognition(image_path: str, api_key: str = None):
             preprocessor = ImagePreprocessor()
             # 增大边距，尝试捕获更多边缘卡牌
             processed_image_path = preprocessor.add_safe_margin(image_path, margin_size=30)
-            print("🖼️ 使用预处理后的图片进行识别（30px边距）")
+            if not silent:
+                print("🖼️ 使用预处理后的图片进行识别（30px边距）")
         else:
-            print("⚠️ 跳过图片预处理")
+            if not silent:
+                print("⚠️ 跳过图片预处理")
         
         # 使用预处理后的图片
         img = Image.open(processed_image_path)
+        
+        # 获取原图尺寸用于坐标转换（统一使用原图中心坐标系）
+        original_img = Image.open(image_path)
+        original_width, original_height = original_img.size
         
         prompt = """
         请仔细扫描这张塔罗牌阵图片，识别所有可见的塔罗牌。
@@ -127,17 +133,19 @@ def gemini_card_recognition(image_path: str, api_key: str = None):
         请开始识别所有可见的塔罗牌：
         """
         
-        print("🌐 使用Gemini Vision识别...")
-        print("⏳ 分析中...")
+        if not silent:
+            print("🌐 使用Gemini Vision识别...")
+            print("⏳ 分析中...")
         
         response = model.generate_content([prompt, img])
         
         if response.text:
-            print("✅ Gemini识别完成！")
-            print("\n📋 Gemini识别结果:")
-            print("-" * 50)
-            print(response.text)
-            print("-" * 50)
+            if not silent:
+                print("✅ Gemini识别完成！")
+                print("\n📋 Gemini识别结果:")
+                print("-" * 50)
+                print(response.text)
+                print("-" * 50)
             
             lines = response.text.strip().split('\n')
             cards = []
@@ -159,7 +167,22 @@ def gemini_card_recognition(image_path: str, api_key: str = None):
                         if len(before_parts) >= 2:
                             card_name = before_parts[0].strip()
                             orientation = before_parts[1].strip()
-                            position = coord_part
+                            
+                            # 转换坐标为原图中心坐标系
+                            if PREPROCESSOR_AVAILABLE:
+                                x, y = preprocessor.parse_coordinate_string(coord_part)
+                                if x is not None and y is not None:
+                                    # 预处理图片坐标 → 原图坐标 → 原图中心坐标
+                                    original_x = x - 30  # 减去左边距
+                                    original_y = y - 30  # 减去上边距
+                                    center_x, center_y = preprocessor.convert_to_center_coordinates(
+                                        original_x, original_y, original_width, original_height
+                                    )
+                                    position = f"({center_x}, {center_y})"
+                                else:
+                                    position = coord_part
+                            else:
+                                position = coord_part
                             
                             cards.append({
                                 'card_name': card_name,
@@ -181,18 +204,15 @@ def gemini_card_recognition(image_path: str, api_key: str = None):
                             })
             
             # 简单的结果统计，不预设期望
-            if len(cards) > 0:
-                print(f"\n✅ 成功识别到 {len(cards)} 张卡牌")
-            else:
-                print(f"\n⚠️ 未识别到任何卡牌")
+            if not silent:
+                if len(cards) > 0:
+                    print(f"\n✅ 成功识别到 {len(cards)} 张卡牌")
+                else:
+                    print(f"\n⚠️ 未识别到任何卡牌")
             
-            # 如果使用了预处理，需要调整坐标
-            if PREPROCESSOR_AVAILABLE and preprocessor:
-                print("🔄 调整坐标以匹配原始图片...")
-                # 注意：网格坐标可能不需要调整，先检查坐标类型
-                cards = preprocessor.process_recognition_result(cards, margin_size=30)
-                # 清理临时文件
-                preprocessor.cleanup_temp_files()
+                    # 清理预处理临时文件
+        if PREPROCESSOR_AVAILABLE and preprocessor:
+            preprocessor.cleanup_temp_files()
             
             return cards
         else:
@@ -245,15 +265,13 @@ def gemini_precise_recognition(image_path: str):
         4. 如果看不清楚，请说"无法确定"
 
         📝 **输出格式**：
-        卡牌名称,正位/逆位
+        卡牌名称,正位/逆位,(x坐标,y坐标)
 
         请开始识别：
         """
         
         response = model.generate_content([prompt, img])
         response_text = response.text.strip()
-        
-        print(f"🤖 Gemini精确识别结果: {response_text}")
         
         # 解析结果
         cards = []
@@ -262,17 +280,40 @@ def gemini_precise_recognition(image_path: str):
             
             for i, line in enumerate(lines):
                 if ',' in line:
-                    parts = line.split(',')
-                    if len(parts) >= 2:
-                        card_name = parts[0].strip()
-                        orientation = parts[1].strip()
+                    # 检查是否包含坐标
+                    if '(' in line and ')' in line:
+                        # 有坐标的情况
+                        start_coord = line.find('(')
+                        end_coord = line.find(')', start_coord) + 1
                         
-                        cards.append({
-                            'card_name': card_name,
-                            'orientation': orientation,
-                            'position': f"(0, 0)",  # 裁剪图片无精确坐标
-                            'order': i + 1
-                        })
+                        before_coord = line[:start_coord].rstrip(',').strip()
+                        coord_part = line[start_coord:end_coord].strip()
+                        
+                        before_parts = before_coord.split(',')
+                        if len(before_parts) >= 2:
+                            card_name = before_parts[0].strip()
+                            orientation = before_parts[1].strip()
+                            
+                            # 保持裁剪图片的左上角坐标（在gemini_edge_detection中统一转换）
+                            position = coord_part
+                        else:
+                            # 格式不正确，跳过这行
+                            continue
+                    
+                    else:
+                        # 没有坐标的情况
+                        parts = line.split(',')
+                        if len(parts) >= 2:
+                            card_name = parts[0].strip()
+                            orientation = parts[1].strip()
+                            position = "(0, 0)"  # 无坐标时使用原点
+                    
+                    cards.append({
+                        'card_name': card_name,
+                        'orientation': orientation,
+                        'position': position,
+                        'order': i + 1
+                    })
         
         return cards if cards else None
         
@@ -288,81 +329,104 @@ def gemini_edge_detection(image_path: str):
         
     preprocessor = ImagePreprocessor()
     
-    print("🔍 完整边缘检测分析")
-    print("=" * 40)
+    print("🔍 分析中...")
     
-    # 1. 先进行完整图片识别
-    print("1️⃣ 完整图片识别...")
-    full_cards = gemini_card_recognition(image_path)
+    # 1. 完整图片识别（静默）
+    full_cards = gemini_card_recognition(image_path, silent=True)
     
-    if full_cards:
-        print(f"✅ 完整图片识别到 {len(full_cards)} 张卡牌")
-        full_card_names = [card['card_name'] for card in full_cards]
-    else:
+    if not full_cards:
         print("❌ 完整图片识别失败")
         return None
     
-    # 2. 右侧边缘检测  
-    print(f"\n2️⃣ 右侧边缘检测...")
-    right_crop = preprocessor.crop_right_edge(image_path, crop_percentage=0.2)
+    full_card_names = [card['card_name'] for card in full_cards]
     
-    # 使用专门的边缘识别提示词
-    print("🔍 使用高精度识别...")
+    # 2. 右侧边缘检测（直接使用原图）
+    # 获取原图尺寸用于坐标转换
+    from PIL import Image
+    original_image = Image.open(image_path)
+    original_width, original_height = original_image.size
+    
+    # 直接对原图进行右侧裁剪
+    right_crop = preprocessor.crop_right_edge(image_path, crop_percentage=0.2, silent=True)
     right_cards = gemini_precise_recognition(right_crop)
     
-    # 3. 分析对比结果
-    print(f"\n📊 对比分析:")
-    print(f"完整识别: {len(full_cards)} 张")
-    print(f"右侧边缘: {len(right_cards) if right_cards else 0} 张")
+    # 3. 整合结果
+    final_cards = []
+    new_cards_found = []
     
+    # 添加完整识别的卡牌
+    for card in full_cards:
+        final_cards.append({
+            'card_name': card['card_name'],
+            'orientation': card['orientation'], 
+            'position': card['position'],
+            'source': '完整识别'
+        })
+    
+    # 添加新发现的卡牌
     if right_cards:
         right_card_names = [card['card_name'] for card in right_cards]
-        
-        # 找出右侧边缘特有的卡牌
         new_cards = [name for name in right_card_names if name not in full_card_names]
-        common_cards = [name for name in right_card_names if name in full_card_names]
         
-        print(f"\n🎴 右侧边缘精确识别结果:")
+        # 计算右侧裁剪区域的坐标转换
+        # 裁剪起始位置：原图宽度的80%位置开始
+        crop_start_x = int(original_width * 0.8)
+        
         for card in right_cards:
-            status = "🆕 新发现" if card['card_name'] in new_cards else "✅ 已识别"
-            print(f"  • {card['card_name']} ({card['orientation']}) - {status}")
-        
-        if new_cards:
-            print(f"\n🚨 可能遗漏的卡牌 ({len(new_cards)} 张):")
-            for card_name in new_cards:
-                print(f"  🆕 {card_name}")
-            print(f"\n💡 建议: 完整图片可能遗漏了右侧的 {len(new_cards)} 张卡牌")
-        else:
-            print(f"\n✅ 右侧边缘没有发现新卡牌，完整识别较为准确")
-            
-        if common_cards:
-            print(f"\n🔄 重复识别的卡牌: {len(common_cards)} 张")
-            
-        print(f"\n⚠️ **关于识别准确性**:")
-        print(f"Gemini Vision是预训练模型，我们无法训练它。识别错误可能因为:")
-        print(f"- 裁剪后图片质量下降")
-        print(f"- 相似卡牌的视觉混淆（如星币7 vs 星币10）")
-        print(f"- 角度、光线、分辨率影响")
-        print(f"- 请对照裁剪图片手动验证识别结果")
+            if card['card_name'] in new_cards:
+                # 获取裁剪图片中的坐标（这是基于裁剪图片左上角的坐标）
+                crop_position = card.get('position', '(0, 0)')
+                crop_x, crop_y = preprocessor.parse_coordinate_string(crop_position)
+                
+                if crop_x is not None and crop_y is not None:
+                    # 转换为原图左上角坐标系
+                    original_x = crop_start_x + crop_x
+                    original_y = crop_y  # y坐标不变
+                    
+                    # 转换为原图中心坐标系
+                    center_x, center_y = preprocessor.convert_to_center_coordinates(
+                        original_x, original_y, original_width, original_height
+                    )
+                    converted_position = f"({center_x}, {center_y})"
+                else:
+                    converted_position = "(右侧区域)"
+                
+                final_cards.append({
+                    'card_name': card['card_name'],
+                    'orientation': card['orientation'],
+                    'position': converted_position,
+                    'source': '边缘补充'
+                })
+                new_cards_found.append(card['card_name'])
+    
+    # 4. 输出最终结果
+    print(f"\n🎴 完整识别结果 ({len(final_cards)} 张卡牌)")
+    print("📐 坐标系统: 中心坐标系，原点(0,0)在图片中心，单位像素")
+    print("=" * 50)
+    
+    for i, card in enumerate(final_cards, 1):
+        source_icon = "✅" if card['source'] == '完整识别' else "🆕"
+        print(f"{i:2d}. {card['card_name']} ({card['orientation']}) - {card['position']} {source_icon}")
+    
+    print("=" * 50)
+    
+    if new_cards_found:
+        print(f"🆕 边缘检测补充发现: {len(new_cards_found)} 张")
+        for card_name in new_cards_found:
+            print(f"   • {card_name}")
     else:
-        print(f"\n✅ 右侧边缘未发现卡牌")
+        print("✅ 完整识别已覆盖所有卡牌")
     
-    # 显示裁剪图片位置
-    print(f"\n📁 裁剪图片已保存: {right_crop}")
-    
-    # 等待用户查看后再清理
+    print(f"\n📁 右侧裁剪图片: {right_crop}")
     input("按回车键清理临时文件...")
+    
+    # 清理临时文件
     preprocessor.cleanup_temp_files()
     
     return {
-        'full_cards': full_cards,
-        'right_cards': right_cards,
-        'cropped_image_path': right_crop,
-        'analysis': {
-            'full_count': len(full_cards),
-            'right_count': len(right_cards) if right_cards else 0,
-            'potential_missing': len([name for name in (right_card_names if right_cards else []) if name not in full_card_names])
-        }
+        'final_cards': final_cards,
+        'new_cards_found': new_cards_found,
+        'total_count': len(final_cards)
     }
 
 def gemini_recognition_test():
@@ -372,8 +436,8 @@ def gemini_recognition_test():
     
     # 让用户选择图片
     print("请选择要识别的图片：")
-    print("1. 🎴 原始测试图片 (spread_0_4821735726296_.pic.jpg)")
-    print("2. 📷 自定义图片路径")
+    print("1. 原始测试图片 (spread_0_4821735726296_.pic.jpg)")
+    print("2. 自定义图片路径")
     
     while True:
         img_choice = input("请选择图片 (1-2): ").strip()
@@ -388,8 +452,8 @@ def gemini_recognition_test():
     
     # 让用户选择识别策略
     print("\n请选择识别策略：")
-    print("1. 🎯 单图识别 (简洁快速)")
-    print("2. 🔍 边缘遗漏分析 (对比完整识别vs右侧20%裁剪)")
+    print("1. 单图识别")
+    print("2. 单图识别+边缘遗漏分析 (右侧20%裁剪)")
     
     while True:
         choice = input("请选择 (1-2): ").strip()
@@ -409,9 +473,12 @@ def gemini_recognition_test():
         return recognized_cards  # 边缘检测直接返回
     
     if recognized_cards:
-        print(f"\n🎴 解析后的卡牌列表 ({len(recognized_cards)} 张):")
+        print(f"\n🎴 识别结果 ({len(recognized_cards)} 张卡牌)")
+        print("📐 坐标系统: 中心坐标系，原点(0,0)在图片中心，单位像素")
+        print("=" * 50)
         for card in recognized_cards:
-            print(f"  {card['order']}. {card['card_name']} ({card['orientation']}) - 位置: {card['position']}")
+            print(f"{card['order']:2d}. {card['card_name']} ({card['orientation']}) - {card['position']}")
+        print("=" * 50)
     
     return recognized_cards
 
@@ -420,7 +487,7 @@ def gemini_recognition_test():
 def interactive_menu():
     """交互式菜单"""
     while True:
-        print("\n🎯 塔罗牌识别系统 (简化版)")
+        print("\n🎯 塔罗牌识别系统")
         print("="*35)
         print("1. 🔮 开始识别")
         print("2. 🚪 退出")
