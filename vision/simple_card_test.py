@@ -67,9 +67,10 @@ def gemini_card_recognition(image_path: str, api_key: str = None, silent: bool =
         # 使用预处理后的图片
         img = Image.open(processed_image_path)
         
-        # 获取原图尺寸用于坐标转换（统一使用原图中心坐标系）
-        original_img = Image.open(image_path)
-        original_width, original_height = original_img.size
+        # 获取处理后图片尺寸用于中心坐标转换
+        processed_width, processed_height = img.size
+        print(f"📏 处理后图片尺寸: {processed_width}x{processed_height}")
+        print()
         
         prompt = """
         请仔细扫描这张塔罗牌阵图片，识别所有可见的塔罗牌。
@@ -130,6 +131,13 @@ def gemini_card_recognition(image_path: str, api_key: str = None, silent: bool =
         22依恋,正位,(0, 1)
         23母子,逆位,(-1, 2)
 
+        坐标系统说明：
+        - 请以整张图片左上角为坐标原点 (0,0)，右下角为最大像素 (宽度, 高度)
+        - 所有坐标必须是像素单位，必须落在图片尺寸范围内
+        - 例如：图片大小为 1766x1339，坐标必须在 (0,0) 到 (1765,1338) 之间
+        - 每张卡牌的坐标应该是该牌在图片中的中心点位置
+        - 请不要使用相对位置，也不要只返回部分区域的坐标
+
         请开始识别所有可见的塔罗牌：
         """
         
@@ -168,17 +176,20 @@ def gemini_card_recognition(image_path: str, api_key: str = None, silent: bool =
                             card_name = before_parts[0].strip()
                             orientation = before_parts[1].strip()
                             
-                            # 转换坐标为原图中心坐标系
+                            # 直接转换为中心坐标系（无需复杂边距调整）
                             if PREPROCESSOR_AVAILABLE:
                                 x, y = preprocessor.parse_coordinate_string(coord_part)
                                 if x is not None and y is not None:
-                                    # 预处理图片坐标 → 原图坐标 → 原图中心坐标
-                                    original_x = x - 30  # 减去左边距
-                                    original_y = y - 30  # 减去上边距
+                                    # 显示原始坐标
+                                    print(f"🔍 {card_name}: Gemini原始={coord_part}")
+                                    
+                                    # 直接转换为中心坐标系
                                     center_x, center_y = preprocessor.convert_to_center_coordinates(
-                                        original_x, original_y, original_width, original_height
+                                        x, y, processed_width, processed_height
                                     )
-                                    position = f"({center_x}, {center_y})"
+                                    converted_coord = f"({center_x}, {center_y})"
+                                    
+                                    position = converted_coord
                                 else:
                                     position = coord_part
                             else:
@@ -266,6 +277,13 @@ def gemini_precise_recognition(image_path: str):
 
         📝 **输出格式**：
         卡牌名称,正位/逆位,(x坐标,y坐标)
+
+        坐标系统说明：
+        - 请以图片左上角为坐标原点 (0,0)，右下角为最大像素 (宽度, 高度)
+        - 所有坐标必须是像素单位，必须落在图片尺寸范围内
+        - 例如：图片大小为 1766x1339，坐标必须在 (0,0) 到 (1765,1338) 之间
+        - 每张卡牌的坐标应该是该牌在图片中的中心点位置
+        - 请不要使用相对位置，也不要只返回部分区域的坐标
 
         请开始识别：
         """
@@ -379,15 +397,20 @@ def gemini_edge_detection(image_path: str):
                 crop_x, crop_y = preprocessor.parse_coordinate_string(crop_position)
                 
                 if crop_x is not None and crop_y is not None:
-                    # 转换为原图左上角坐标系
+                    # 显示边缘检测的坐标转换过程
+                    print(f"🔍 边缘检测 {card['card_name']}: 裁剪图坐标={crop_position}")
+                    
+                    # 转换为原图坐标，然后转为中心坐标系
                     original_x = crop_start_x + crop_x
                     original_y = crop_y  # y坐标不变
+                    print(f"     原图坐标=({original_x}, {original_y})")
                     
-                    # 转换为原图中心坐标系
+                    # 转换为中心坐标系
                     center_x, center_y = preprocessor.convert_to_center_coordinates(
                         original_x, original_y, original_width, original_height
                     )
                     converted_position = f"({center_x}, {center_y})"
+                    print(f"     中心坐标={converted_position}")
                 else:
                     converted_position = "(右侧区域)"
                 
