@@ -69,8 +69,6 @@ def gemini_card_recognition(image_path: str, api_key: str = None, silent: bool =
         
         # 获取处理后图片尺寸用于中心坐标转换
         processed_width, processed_height = img.size
-        print(f"📏 处理后图片尺寸: {processed_width}x{processed_height}")
-        print()
         
         prompt = """
         请仔细扫描这张塔罗牌阵图片，识别所有可见的塔罗牌。
@@ -176,20 +174,14 @@ def gemini_card_recognition(image_path: str, api_key: str = None, silent: bool =
                             card_name = before_parts[0].strip()
                             orientation = before_parts[1].strip()
                             
-                            # 直接转换为中心坐标系（无需复杂边距调整）
+                            # 直接使用Gemini原始坐标（暂时去掉中心坐标转换）
                             if PREPROCESSOR_AVAILABLE:
                                 x, y = preprocessor.parse_coordinate_string(coord_part)
                                 if x is not None and y is not None:
-                                    # 显示原始坐标
-                                    print(f"🔍 {card_name}: Gemini原始={coord_part}")
-                                    
-                                    # 直接转换为中心坐标系
-                                    center_x, center_y = preprocessor.convert_to_center_coordinates(
-                                        x, y, processed_width, processed_height
-                                    )
-                                    converted_coord = f"({center_x}, {center_y})"
-                                    
-                                    position = converted_coord
+                                    # 简单减去边距偏移
+                                    adjusted_x = max(0, x - 30)
+                                    adjusted_y = max(0, y - 30)
+                                    position = f"({adjusted_x}, {adjusted_y})"
                                 else:
                                     position = coord_part
                             else:
@@ -397,20 +389,10 @@ def gemini_edge_detection(image_path: str):
                 crop_x, crop_y = preprocessor.parse_coordinate_string(crop_position)
                 
                 if crop_x is not None and crop_y is not None:
-                    # 显示边缘检测的坐标转换过程
-                    print(f"🔍 边缘检测 {card['card_name']}: 裁剪图坐标={crop_position}")
-                    
-                    # 转换为原图坐标，然后转为中心坐标系
+                    # 简单转换为原图坐标（暂时去掉中心坐标转换）
                     original_x = crop_start_x + crop_x
                     original_y = crop_y  # y坐标不变
-                    print(f"     原图坐标=({original_x}, {original_y})")
-                    
-                    # 转换为中心坐标系
-                    center_x, center_y = preprocessor.convert_to_center_coordinates(
-                        original_x, original_y, original_width, original_height
-                    )
-                    converted_position = f"({center_x}, {center_y})"
-                    print(f"     中心坐标={converted_position}")
+                    converted_position = f"({original_x}, {original_y})"
                 else:
                     converted_position = "(右侧区域)"
                 
@@ -424,7 +406,7 @@ def gemini_edge_detection(image_path: str):
     
     # 4. 输出最终结果
     print(f"\n🎴 完整识别结果 ({len(final_cards)} 张卡牌)")
-    print("📐 坐标系统: 中心坐标系，原点(0,0)在图片中心，单位像素")
+    print("📐 坐标系统: 图片左上角为原点(0,0)，已调整边距，单位像素")
     print("=" * 50)
     
     for i, card in enumerate(final_cards, 1):
@@ -497,7 +479,7 @@ def gemini_recognition_test():
     
     if recognized_cards:
         print(f"\n🎴 识别结果 ({len(recognized_cards)} 张卡牌)")
-        print("📐 坐标系统: 中心坐标系，原点(0,0)在图片中心，单位像素")
+        print("📐 坐标系统: 图片左上角为原点(0,0)，已调整边距，单位像素")
         print("=" * 50)
         for card in recognized_cards:
             print(f"{card['order']:2d}. {card['card_name']} ({card['orientation']}) - {card['position']}")
