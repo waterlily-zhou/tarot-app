@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Direct Learning 塔罗AI系统 - 直接学习完整训练数据
+Self-Learning Tarot AI系统 - 让DeepSeek自己学习语料
 """
 import os
 import json
@@ -10,51 +10,12 @@ from typing import List, Dict, Optional
 import re
 import openai
 
-class PersonContext:
-    """个人Context管理"""
-    def __init__(self, person: str, db_path: str):
-        self.person = person
-        self.db_path = db_path
-        self.readings_history = []
-    
-    def load_person_context(self):
-        """加载个人所有历史记录"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT question, cards, spread, content, source_file 
-            FROM readings 
-            WHERE person = ?
-            ORDER BY rowid DESC
-        ''', (self.person,))
-        
-        rows = cursor.fetchall()
-        self.readings_history = []
-        
-        for row in rows:
-            self.readings_history.append({
-                'question': row[0],
-                'cards': row[1].split(';') if row[1] else [],
-                'spread': row[2],
-                'content': row[3],
-                'source_file': row[4]
-            })
-        
-        conn.close()
-        return len(self.readings_history)
-    
-    def get_recent_readings(self, limit: int = 3) -> List[Dict]:
-        """获取最近几次解读作为个人context"""
-        return self.readings_history[:limit]
-
-class DirectLearningTarotAI:
-    """直接学习完整训练数据的塔罗AI系统"""
+class SelfLearningTarotAI:
+    """让AI自己学习的塔罗系统"""
     
     def __init__(self):
         self.client = None
         self.db_path = "data/deepseek_tarot_knowledge.db"
-        self.training_examples = []
         self.init_deepseek()
         self.init_database()
     
@@ -62,7 +23,6 @@ class DirectLearningTarotAI:
         """初始化DeepSeek客户端"""
         api_key = os.getenv("DEEPSEEK_API_KEY")
         if not api_key:
-            # 尝试从.env.local读取
             env_file = Path(".env.local")
             if env_file.exists():
                 with open(env_file, 'r') as f:
@@ -74,8 +34,6 @@ class DirectLearningTarotAI:
         
         if not api_key:
             print("❌ 请设置 DEEPSEEK_API_KEY 环境变量")
-            print("export DEEPSEEK_API_KEY='your-api-key'")
-            print("🔗 获取API Key: https://platform.deepseek.com/api_keys")
             return False
         
         self.client = openai.OpenAI(api_key=api_key, base_url="https://api.deepseek.com/v1")
@@ -104,35 +62,11 @@ class DirectLearningTarotAI:
         conn.close()
         print(f"✅ 知识库初始化完成: {self.db_path}")
     
-    def load_all_training_examples(self):
-        """加载所有训练数据作为学习范例"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('SELECT person, question, cards, spread, content, source_file FROM readings')
-        rows = cursor.fetchall()
-        
-        self.training_examples = []
-        for row in rows:
-            self.training_examples.append({
-                'person': row[0],
-                'question': row[1], 
-                'cards': row[2].split(';') if row[2] else [],
-                'spread': row[3],
-                'content': row[4],
-                'source_file': row[5]
-            })
-        
-        conn.close()
-        print(f"✅ 加载了 {len(self.training_examples)} 个完整训练案例")
-        return len(self.training_examples)
-    
     def build_knowledge_base(self):
         """构建知识库"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
-        # 检查是否已有数据
         cursor.execute('SELECT COUNT(*) FROM readings')
         count = cursor.fetchone()[0]
         
@@ -141,7 +75,6 @@ class DirectLearningTarotAI:
             conn.close()
             return
         
-        # 从JSONL文件加载数据
         jsonl_file = "data/finetune/tarot_readings.jsonl"
         if not Path(jsonl_file).exists():
             print(f"❌ 训练数据文件不存在: {jsonl_file}")
@@ -162,21 +95,16 @@ class DirectLearningTarotAI:
                     content = sample['response']
                     source_file = metadata.get('source_file', '')
                     
-                    # 从指令中提取问题
                     instruction = sample['instruction']
                     question_match = re.search(r'问题：([^\n]+)', instruction)
                     question = question_match.group(1) if question_match else ''
                     
-                    # 存储到数据库
                     cursor.execute('''
                         INSERT INTO readings (person, question, cards, spread, content, embedding, source_file)
                         VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ''', (person, question, ';'.join(cards), spread, content, 
-                          None, source_file))
+                    ''', (person, question, ';'.join(cards), spread, content, None, source_file))
                     
                     count += 1
-                    if count % 20 == 0:
-                        print(f"   已处理 {count} 条记录...")
                         
                 except Exception as e:
                     print(f"⚠️ 处理记录时出错: {e}")
@@ -185,97 +113,148 @@ class DirectLearningTarotAI:
         conn.close()
         print(f"✅ 知识库构建完成，共 {count} 条记录")
     
-    def generate_direct_learning_reading(self, person: str, question: str, 
-                                       cards: List[str], spread: str = "自由牌阵") -> str:
-        """基于完整训练数据直接学习生成解读"""
+    def get_learning_materials(self, person: str, cards: List[str], limit: int = 15):
+        """获取学习材料"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        learning_materials = []
+        
+        # 1. 获取目标人物的所有历史解读
+        cursor.execute('''
+            SELECT person, question, cards, content 
+            FROM readings 
+            WHERE person = ?
+            ORDER BY rowid DESC
+        ''', (person,))
+        
+        person_readings = cursor.fetchall()
+        
+        # 2. 获取包含相同牌的其他解读（用于丰富牌意理解）
+        query_cards_clean = [card.replace('(正位)', '').replace('(逆位)', '').strip() for card in cards]
+        card_readings = []
+        
+        for card in query_cards_clean[:2]:  # 只取前2张牌避免太多数据
+            cursor.execute('''
+                SELECT person, question, cards, content 
+                FROM readings 
+                WHERE cards LIKE ? 
+                ORDER BY rowid DESC
+                LIMIT 5
+            ''', (f'%{card}%',))
+            card_readings.extend(cursor.fetchall())
+        
+        # 3. 随机获取一些其他解读作为背景理解
+        cursor.execute('''
+            SELECT person, question, cards, content 
+            FROM readings 
+            ORDER BY RANDOM()
+            LIMIT 5
+        ''', ())
+        
+        background_readings = cursor.fetchall()
+        
+        conn.close()
+        
+        return {
+            'person_readings': person_readings,
+            'card_readings': card_readings,
+            'background_readings': background_readings
+        }
+    
+    def generate_self_learning_reading(self, person: str, question: str, 
+                                     cards: List[str], spread: str = "自由牌阵") -> str:
+        """让DeepSeek自己学习后生成解读"""
         
         if not self.client:
             return "❌ DeepSeek 客户端未初始化"
         
-        # 1. 加载个人context
-        print(f"📋 加载 {person} 的个人context...")
-        person_context = PersonContext(person, self.db_path)
-        history_count = person_context.load_person_context()
-        recent_readings = person_context.get_recent_readings(3)
+        print(f"📚 为 {person} 准备学习材料...")
+        materials = self.get_learning_materials(person, cards)
         
-        print(f"   找到 {history_count} 条历史记录")
+        print(f"   找到 {len(materials['person_readings'])} 个个人案例")
+        print(f"   找到 {len(materials['card_readings'])} 个相关牌组案例")
+        print(f"   找到 {len(materials['background_readings'])} 个背景案例")
         
-        # 2. 加载所有训练案例
-        if not self.training_examples:
-            self.load_all_training_examples()
-        
-        # 3. 选择最相关的训练案例（包括同人案例和相似牌组案例）
-        relevant_examples = []
-        
-        # 同人案例（最重要）
-        same_person_examples = [ex for ex in self.training_examples if ex['person'] == person]
-        relevant_examples.extend(same_person_examples[:5])  # 最多5个同人案例
-        
-        # 相似牌组案例
-        query_cards_set = set([card.strip().replace('(正位)', '').replace('(逆位)', '') for card in cards])
-        similar_examples = []
-        for ex in self.training_examples:
-            if ex['person'] != person:  # 排除同人案例
-                ex_cards_set = set([card.strip().replace('(正位)', '').replace('(逆位)', '') for card in ex['cards']])
-                overlap = len(query_cards_set & ex_cards_set)
-                if overlap >= 1:  # 至少有一张牌重叠
-                    similar_examples.append((ex, overlap))
-        
-        # 按重叠度排序，取前3个
-        similar_examples.sort(key=lambda x: x[1], reverse=True)
-        relevant_examples.extend([ex[0] for ex in similar_examples[:3]])
-        
-        # 4. 构建系统提示 - 包含完整的训练案例
-        system_prompt = f"""你是一位专业的塔罗师，请直接学习以下真实的解读案例，掌握其中的解读风格、深度和专业术语运用。
+        # 构建学习提示
+        system_prompt = f"""你是一位专业的塔罗师。现在有丰富的塔罗解读案例供你学习，请你：
 
-以下是 {len(relevant_examples)} 个真实的解读案例，请仔细学习其解读思路、语言风格和专业水准：
+1. 自己分析和理解这些解读案例中的智慧
+2. 学习每张牌在不同情境下的深层含义
+3. 理解不同人的特征和模式
+4. 基于你的学习和理解，为当前咨询提供解读
 
+学习材料：
+
+## {person}的历史解读案例：
 """
         
-        for i, example in enumerate(relevant_examples, 1):
-            cards_str = ' | '.join(example['cards']) if example['cards'] else '未记录'
+        # 添加个人案例
+        for i, (p, q, c, content) in enumerate(materials['person_readings'], 1):
+            cards_display = c.replace(';', ' | ') if c else '未记录'
             system_prompt += f"""
-【案例 {i}】
-咨询者：{example['person']}
-问题：{example['question']}
-牌阵：{example['spread']}
-抽到的牌：{cards_str}
-
-专业解读：
-{example['content']}
+案例{i}：
+问题：{q}
+牌组：{cards_display}
+解读：{content}
 
 ---
 """
         
-        system_prompt += """
-请完全按照以上案例的风格、深度和专业水准来进行解读。注意：
-- 使用相同的专业术语（如"锚定"、"动能"、"消耗态"、"元素"、"层面"等）
-- 保持相同的分析深度和洞察力
-- 结合占星学、能量工作等多重维度
-- 区分正位/逆位的精准含义
-- 关注人格层面和灵魂层面的双重显现
+        # 添加牌组参考案例
+        if materials['card_readings']:
+            system_prompt += f"\n## 相关牌组的解读案例（用于丰富牌意理解）：\n"
+            
+            for i, (p, q, c, content) in enumerate(materials['card_readings'][:8], 1):
+                cards_display = c.replace(';', ' | ') if c else '未记录'
+                system_prompt += f"""
+案例{i}：
+咨询者：{p}
+问题：{q} 
+牌组：{cards_display}
+解读：{content[:400]}...
+
+---
 """
         
-        # 5. 构建用户提示
-        cards_str = ' | '.join(cards)
-        recent_context = ""
-        if recent_readings:
-            recent_context = f"\n{person}的最近解读历史：\n"
-            for i, reading in enumerate(recent_readings, 1):
-                recent_cards = ' | '.join(reading['cards']) if reading['cards'] else '未记录'
-                recent_context += f"{i}. {reading['question']} - {recent_cards}\n"
+        # 添加背景案例
+        if materials['background_readings']:
+            system_prompt += f"\n## 其他解读案例（用于理解整体风格）：\n"
+            
+            for i, (p, q, c, content) in enumerate(materials['background_readings'], 1):
+                cards_display = c.replace(';', ' | ') if c else '未记录'
+                system_prompt += f"""
+案例{i}：
+咨询者：{p}
+问题：{q}
+牌组：{cards_display}
+解读：{content[:300]}...
+
+---
+"""
         
-        user_prompt = f"""请为以下咨询提供专业的塔罗解读：
+        system_prompt += f"""
+现在，请基于以上所有案例：
+1. 分析{person}这个人的特征、核心议题和模式
+2. 理解当前牌组中每张牌的深层含义
+3. 保持你原有的专业解牌能力
+4. 结合学到的个人化理解，提供深度解读
+
+不要机械引用案例，而是内化这些智慧后自然地解读。
+"""
+        
+        # 构建用户提示
+        cards_str = ' | '.join(cards)
+        user_prompt = f"""请为以下咨询提供塔罗解读：
 
 咨询者：{person}
 问题：{question}
-牌阵：{spread}  
+牌阵：{spread}
 抽到的牌：{cards_str}
-{recent_context}
-请按照你学习的案例风格，提供深度专业的解读。"""
+
+请基于你从学习材料中获得的理解进行解读。"""
         
-        # 6. 调用DeepSeek API
-        print("🤖 使用 DeepSeek R1 基于完整训练数据生成解读...")
+        print("🤖 DeepSeek正在学习和分析...")
         
         try:
             response = self.client.chat.completions.create(
@@ -284,60 +263,49 @@ class DirectLearningTarotAI:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                max_tokens=2000,
+                max_tokens=2500,
                 temperature=0.7,
                 top_p=0.9
             )
             
             reading_result = response.choices[0].message.content.strip()
             
-            return f"""🔮 {person}的专业塔罗解读
+            return f"""🔮 {person}的塔罗解读
 
 📋 咨询信息：
    问题：{question}
    牌阵：{spread}
    抽到的牌：{cards_str}
 
-👤 个人Context：
-   历史解读：{history_count} 次
-   参考案例：{len(relevant_examples)} 个相关解读
-
-🎯 专业解读：
+🎯 解读：
 {reading_result}
 
 🧠 解读基础：
-   基于 {len(self.training_examples)} 个完整训练案例直接学习
-   重点参考同咨询者历史案例和相似牌组案例
-   由 DeepSeek R1 深度推理生成"""
+   基于{len(materials['person_readings'])}个个人案例、{len(materials['card_readings'])}个牌组案例的自主学习
+   由 DeepSeek R1 分析理解后生成"""
             
         except Exception as e:
             return f"❌ 生成解读失败: {e}"
 
 def main():
     print("✅ 依赖库导入成功")
-    print("🔮 Direct Learning 塔罗AI系统")
+    print("🔮 Self-Learning Tarot AI系统")
     print("=" * 50)
     
-    # 初始化系统
-    ai_system = DirectLearningTarotAI()
+    ai_system = SelfLearningTarotAI()
     
     if not ai_system.client:
         print("❌ DeepSeek 客户端初始化失败")
         return
     
-    # 构建知识库
     ai_system.build_knowledge_base()
     
-    # 加载训练案例
-    ai_system.load_all_training_examples()
-    
-    # 测试案例
-    print("\n🧪 测试 Direct Learning 解读...\n")
+    print("\n🧪 测试自主学习解读...\n")
     print("=" * 60)
     print("测试案例 1")
     print("=" * 60)
     
-    result = ai_system.generate_direct_learning_reading(
+    result = ai_system.generate_self_learning_reading(
         person="Mel",
         question="当前的内在成长状态",
         cards=["愚人(正位)", "力量(正位)", "星币十(正位)"],
@@ -348,7 +316,6 @@ def main():
     
     print("\n" + "=" * 60)
     
-    # 交互模式
     while True:
         choice = input("是否进入交互模式？(y/n): ").strip().lower()
         if choice != 'y':
@@ -366,12 +333,12 @@ def main():
             
         cards = [card.strip() for card in cards_input.split('|')]
         
-        print("\n🔮 生成解读中...\n")
-        result = ai_system.generate_direct_learning_reading(person, question, cards, spread)
+        print("\n🔮 DeepSeek正在学习和生成解读中...\n")
+        result = ai_system.generate_self_learning_reading(person, question, cards, spread)
         print(result)
         print("\n" + "=" * 60)
     
-    print("\n🎉 Direct Learning 塔罗AI 测试完成!")
+    print("\n🎉 Self-Learning Tarot AI 测试完成!")
 
 if __name__ == "__main__":
     main() 
