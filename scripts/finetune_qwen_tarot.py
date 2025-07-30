@@ -63,11 +63,11 @@ def clean_memory():
         torch.mps.empty_cache()
     print("🧹 内存清理完成")
 
-def validate_and_clean_data(data_file: str, max_length: int = 4000):
+def validate_and_clean_data(data_file: str, max_length: int = 2000):
     """验证和清理训练数据"""
     print(f"🔍 验证训练数据 (最大长度: {max_length} tokens)...")
     
-    model_name = "Qwen/Qwen1.5-7B-Chat"
+    model_name = "Qwen/Qwen1.5-1.8B-Chat"
     print(f"📥 加载分词器: {model_name}")
     
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
@@ -145,7 +145,7 @@ def validate_and_clean_data(data_file: str, max_length: int = 4000):
     
     return valid_samples, tokenizer
 
-def preprocess_function(examples, tokenizer, max_length=4000):
+def preprocess_function(examples, tokenizer, max_length=2000):
     """预处理函数"""
     inputs = []
     labels = []
@@ -185,8 +185,8 @@ def main():
         print("请先运行数据处理脚本")
         return
     
-    # 验证和清理数据
-    valid_samples, tokenizer = validate_and_clean_data(data_file, max_length=4000)
+    # 验证和清理数据 - 使用更小的长度限制
+    valid_samples, tokenizer = validate_and_clean_data(data_file, max_length=2000)
     
     if len(valid_samples) < 10:
         print("❌ 有效样本太少，无法进行训练")
@@ -204,7 +204,7 @@ def main():
     
     # 预处理数据
     def preprocess_wrapper(examples):
-        return preprocess_function(examples, tokenizer, max_length=4000)
+        return preprocess_function(examples, tokenizer, max_length=2000)
     
     dataset = dataset.map(
         preprocess_wrapper,
@@ -217,23 +217,30 @@ def main():
     # 清理内存
     clean_memory()
     
-    # 加载模型 - 优化内存使用
-    print(f"📥 加载 Qwen1.5-7B 模型...")
-    model_name = "Qwen/Qwen1.5-7B-Chat"
+    # 加载更小的模型避免内存问题
+    print(f"📥 加载 Qwen1.5-1.8B 模型（更适合24GB内存）...")
+    model_name = "Qwen/Qwen1.5-1.8B-Chat"
     
     try:
+        print("📥 开始加载模型...")
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            torch_dtype=torch.float32 if device == "mps" else torch.float16,  # MPS使用float32
-            device_map=None,  # 先不自动分配，手动管理
+            torch_dtype=torch.float32,  # 统一使用float32避免MPS问题
+            device_map="cpu",  # 先加载到CPU
             trust_remote_code=True,
-            low_cpu_mem_usage=True,  # 加载时减少CPU内存使用
-            attn_implementation="eager"  # 使用传统注意力机制，更稳定
+            low_cpu_mem_usage=True
         )
+        print("✅ 模型加载到CPU完成")
         
-        # 手动移动到MPS
+        # 分步移动到MPS以避免卡住
         if device == "mps":
-            model = model.to("mps")
+            print("🔄 将模型移动到MPS...")
+            try:
+                model = model.to("mps")
+                print("✅ 模型成功移动到MPS")
+            except Exception as e:
+                print(f"⚠️ MPS移动失败，使用CPU: {e}")
+                device = "cpu"
         
         print(f"✅ 模型加载成功！参数量: {model.num_parameters():,}")
         print(f"📊 模型大小估算: ~{model.num_parameters() * 2 / (1024**3):.1f}GB (fp16)")
@@ -266,13 +273,13 @@ def main():
     # 训练参数 - 针对24GB内存优化
     training_args = TrainingArguments(
         output_dir="./models/qwen-tarot-24gb",
-        num_train_epochs=3,
-        per_device_train_batch_size=1,  # 减小batch size以适应MPS内存限制
-        gradient_accumulation_steps=8,  # 增加梯度累积补偿小batch size
-        warmup_steps=10,
+        num_train_epochs=2,  # 减少epoch数量
+        per_device_train_batch_size=1,
+        gradient_accumulation_steps=4,  # 减少梯度累积
+        warmup_steps=5,
         learning_rate=5e-5,
-        fp16=False,  # MPS不支持fp16混合精度
-        logging_steps=5,
+        fp16=False,
+        logging_steps=1,  # 每步都输出，便于监控
         save_strategy="epoch",
         eval_strategy="no",  # 修复：使用新的参数名
         dataloader_num_workers=0,  # MPS不支持多进程

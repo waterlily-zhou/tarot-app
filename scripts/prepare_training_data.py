@@ -9,11 +9,11 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 class TarotDataProcessorFinal:
-    def __init__(self, readings_dir: str, max_chars: int = 6000):  # 大幅降低字符限制
+    def __init__(self, readings_dir: str, max_chars: int = 3000):  # 进一步降低字符限制
         self.readings_dir = Path(readings_dir)
         self.output_dir = Path("data/finetune")
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.max_chars = max_chars  # 6000字符大约对应4000-5000个中文token
+        self.max_chars = max_chars  # 3000字符大约对应2000个中文token
         
     def parse_md_file(self, md_path: Path) -> Optional[Dict]:
         """解析单个MD文件"""
@@ -115,7 +115,7 @@ class TarotDataProcessorFinal:
         
         return cleaned_cards
     
-    def split_long_text_aggressive(self, text: str, max_chars: int = 6000) -> List[str]:
+    def split_long_text_aggressive(self, text: str, max_chars: int = 3000) -> List[str]:
         """更激进的文本拆分策略"""
         if len(text) <= max_chars:
             return [text]
@@ -333,5 +333,5 @@ class TarotDataProcessorFinal:
         return str(output_file)
 
 if __name__ == "__main__":
-    processor = TarotDataProcessorFinal("data/Readings 6c05b8c41bcf40f9be4f7dd503141fd2", max_chars=6000)
+    processor = TarotDataProcessorFinal("data/Readings 6c05b8c41bcf40f9be4f7dd503141fd2", max_chars=3000)
     processor.process_all_files()
