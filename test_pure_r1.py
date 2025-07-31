@@ -28,6 +28,30 @@ def init_deepseek():
     print("✅ DeepSeek R1 客户端初始化成功")
     return client
 
+def get_card_meanings(cards: list):
+    """获取牌意笔记"""
+    card_meanings = {}
+    
+    for card_name in cards:
+        # 清理牌名
+        clean_card = card_name.replace('(正位)', '').replace('(逆位)', '').strip()
+        
+        # 查找对应的MD文件
+        card_file = Path(f"data/card_meanings/{clean_card}.md")
+        
+        if card_file.exists():
+            try:
+                with open(card_file, 'r', encoding='utf-8') as f:
+                    content = f.read().strip()
+                    card_meanings[clean_card] = content
+                    print(f"✅ 找到 {clean_card} 的牌意笔记")
+            except Exception as e:
+                print(f"⚠️ 读取 {clean_card} 牌意失败: {e}")
+        else:
+            print(f"🔍 未找到 {clean_card} 的牌意笔记")
+    
+    return card_meanings
+
 def get_light_person_context(person: str, cards: list):
     """轻量获取个人背景信息"""
     db_path = "data/deepseek_tarot_knowledge.db"
@@ -68,6 +92,81 @@ def get_light_person_context(person: str, cards: list):
         'recent_readings': recent_readings,
         'card_examples': card_examples
     }
+
+def test_card_meaning_enhanced_r1(client):
+    """测试加入牌意笔记的R1解读"""
+    
+    person = "Mel"
+    cards = ["愚人(正位)", "力量(正位)", "星币十(正位)"]
+    
+    print(f"🔮 测试牌意笔记增强版DeepSeek R1解读（{person}）...")
+    
+    # 获取牌意笔记
+    card_meanings = get_card_meanings(cards)
+    
+    # 获取轻量背景信息
+    context = get_light_person_context(person, cards)
+    
+    # 构建增强的系统提示
+    system_prompt = """你是一位专业的塔罗师。请为咨询提供深度的塔罗解读。"""
+    
+    # 如果有牌意笔记，加入系统提示
+    if card_meanings:
+        system_prompt += "\n\n以下是一些牌意笔记供参考：\n"
+        for card, meaning in card_meanings.items():
+            system_prompt += f"\n{card}：\n{meaning}\n"
+        system_prompt += "\n请结合这些牌意深化理解进行解读。"
+    
+    user_prompt = f"""请为以下咨询提供塔罗解读：
+
+咨询者：{person}
+问题：当前的内在成长状态
+牌阵：内在探索牌阵
+抽到的牌：{' | '.join(cards)}"""
+
+    # 如果有背景信息，轻量地加入
+    if context and context['recent_readings']:
+        user_prompt += f"""
+
+背景信息：{person}近期的一些关注点："""
+        for i, (question, _, _) in enumerate(context['recent_readings'], 1):
+            user_prompt += f"\n- {question}"
+        user_prompt += "\n\n请结合这些背景适当个人化解读。"
+    
+    user_prompt += "\n\n请进行专业解读。"
+    
+    try:
+        print("🤖 调用牌意笔记增强版DeepSeek R1...")
+        response = client.chat.completions.create(
+            model="deepseek-reasoner",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            max_tokens=2000,
+            temperature=0.7,
+            top_p=0.9
+        )
+        
+        result = response.choices[0].message.content.strip()
+        
+        print("🎯 牌意笔记增强版解读结果：")
+        print("=" * 60)
+        print(result)
+        print("=" * 60)
+        
+        # 显示thinking过程
+        if hasattr(response.choices[0].message, 'reasoning_content'):
+            print("\n🧠 R1 Thinking过程：")
+            print("-" * 40)
+            print(response.choices[0].message.reasoning_content)
+            print("-" * 40)
+        
+        return result
+        
+    except Exception as e:
+        print(f"❌ 调用失败: {e}")
+        return None
 
 def test_light_personalized_r1(client):
     """测试轻量个人化的R1解读"""
@@ -172,7 +271,7 @@ def test_pure_r1_thinking(client):
         return None
 
 def main():
-    print("🔮 轻量个人化DeepSeek R1测试")
+    print("🔮 牌意笔记增强版DeepSeek R1测试")
     print("=" * 50)
     
     client = init_deepseek()
@@ -189,10 +288,17 @@ def main():
     print("\n2️⃣ 轻量个人化版本...")
     personalized_result = test_light_personalized_r1(client)
     
+    print("\n" + "="*60)
+    
+    # 测试牌意笔记增强版
+    print("\n3️⃣ 牌意笔记增强版本...")
+    enhanced_result = test_card_meaning_enhanced_r1(client)
+    
     print("\n💭 对比分析：")
-    print("- 个人化版本是否保持了R1的推理质量？")
-    print("- 是否增加了有用的个人化信息？")
-    print("- 背景信息是否干扰了原始解读能力？")
+    print("- 牌意笔记是否成功融入R1的thinking？")
+    print("- 解读是否体现了你的独特牌意理解？")
+    print("- 是否保持了R1的推理质量？")
+    print("- 'Baby牌'等个人化术语是否被理解和使用？")
 
 if __name__ == "__main__":
     main() 
