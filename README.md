@@ -1,84 +1,122 @@
-# 🎴 塔罗牌AI识别与解读系统
+# 塔罗AI系统
 
-分离架构的塔罗牌系统，将图像识别和AI解读功能模块化设计。
+智能塔罗牌解读系统，结合计算机视觉识别和大语言模型解读。
 
-## 🏗️ 重组架构
+## 🚀 最新：R1 LoRA本地微调系统
 
-### 📁 分离式设计
+**🆕 2024年7月31日更新**：新增基于DeepSeek R1的本地LoRA微调系统！
+
+**主要特性：**
+- 🔒 **完全本地训练**：数据隐私100%保护
+- 🧠 **R1推理能力**：具备深度思考和分析能力  
+- ⚡ **高效LoRA训练**：只需3-5小时即可完成微调
+- 💻 **M4优化**：专为Apple Silicon优化
+
+👉 **查看详情**：[R1 LoRA系统文档](models/r1_lora_system/README.md)
+
+## 📁 项目结构
+
 ```
 tarot-app/
-├── main.py                  # 🚀 主入口程序
-├── vision/                  # 🔍 图片识别模块
-│   ├── simple_card_test.py      # 简化识别功能 (Gemini + 边缘检测)
-│   ├── image_preprocessor.py    # 图片预处理
-│   ├── waite_tarot_recognizer.py    # 韦特塔罗识别器
-│   └── integrated_vision_system.py  # 集成视觉系统
-├── ai/                      # 🤖 AI解牌模块  
-│   ├── professional_tarot_ai.py     # 专业解牌AI
-│   ├── tarot_card_meanings.py      # 卡牌含义数据库
-│   ├── tarot_spread_system.py      # 牌阵系统
-│   ├── rag_system.py               # RAG检索系统
-│   └── integrated_tarot_system.py  # 整合解牌系统
-└── data/                    # 📁 数据文件夹
+├── README.md                     # 本文档
+├── main.py                       # 主程序入口
+├── models/                       # 模型相关文件
+│   └── r1_lora_system/          # 🆕 R1 LoRA微调系统
+│       ├── README.md            # R1系统详细文档
+│       ├── local_lora_training.py # 本地LoRA训练脚本
+│       ├── test_pure_r1.py      # R1测试和深度学习
+│       ├── test_vector_rag.py   # 向量检索对比
+│       └── lora_comparison.md   # LoRA技术对比
+├── ai/                          # AI解读模块
+│   ├── professional_tarot_ai.py # 专业塔罗AI
+│   ├── tarot_spread_system.py   # 牌阵系统
+│   └── ...
+├── vision/                      # 计算机视觉模块
+│   ├── split_gemini_recognizer.py # Gemini视觉识别
+│   ├── image_preprocessor.py    # 图像预处理
+│   └── ...
+└── data/                        # 数据文件
+    ├── deepseek_tarot_knowledge.db # 知识库
+    └── card_meanings/           # 牌意笔记
 ```
 
-## 🎯 功能特色
+## 🎯 系统选择指南
 
-### 🔍 图像识别 (vision/)
-- **Gemini Vision**: Google AI高精度在线识别
-- **边缘检测**: 专门的右侧遗漏分析
-- **图片预处理**: 边距处理、坐标调整
-- **简化菜单**: 只保留核心功能
+| 需求场景 | 推荐系统 | 特点 |
+|----------|----------|------|
+| **隐私至上 + 最佳质量** | [R1 LoRA本地微调](models/r1_lora_system/) | 完全本地，R1推理能力 |
+| **快速原型验证** | R1 API (test_pure_r1.py) | 无需训练，即时可用 |
+| **卡牌识别** | 视觉系统 (vision/) | Gemini视觉，准确识别 |
 
-### 🤖 AI解牌 (ai/)
-- **专业解读**: 多维度分析系统
-- **RAG检索**: 基于知识库的上下文解读
-- **牌阵系统**: 支持多种经典布局
-- **完整数据库**: 78张韦特塔罗牌含义
+## 🔧 快速开始
 
-## 🚀 快速开始
-
-### 启动系统
+### 1. R1 LoRA本地训练（推荐）
 ```bash
-python main.py
+cd models/r1_lora_system/
+python local_lora_training.py
 ```
 
-### 识别选项
-1. **🎯 单图识别** - 快速识别整张牌阵
-2. **🔍 边缘遗漏分析** - 检测右侧遗漏卡牌
-
-### 环境配置
+### 2. R1 API测试
 ```bash
-# 设置Gemini API Key
-echo "GOOGLE_API_KEY=你的API密钥" > .env.local
+python models/r1_lora_system/test_pure_r1.py
 ```
 
-## 🎯 使用方法
+### 3. 视觉识别测试
+```bash
+python vision/simple_card_test.py
+```
 
-### 图片识别流程
-1. 运行 `python main.py`
-2. 选择图片路径 
-3. 选择识别策略（单图/边缘检测）
-4. 查看识别结果和裁剪图片
+## 💾 硬件要求
 
-### AI解牌流程  
-1. 将识别结果导入ai模块
-2. 使用专业解牌系统分析
-3. 生成个性化解读报告
+### R1 LoRA训练
+- **内存**：8GB+ 可用内存
+- **GPU**：Apple M4/M3 (MPS支持)
+- **存储**：30GB 空闲空间
+- **时间**：3-5小时训练
 
-## 📊 技术架构
+### 基础使用
+- **内存**：4GB+ 
+- **网络**：API调用需要
+- **存储**：5GB
 
-### 分离设计优势
-- **模块独立**: 识别和解牌完全分离
-- **灵活组合**: 可独立使用任一模块
-- **便于维护**: 功能清晰，代码组织良好
-- **扩展性强**: 易于添加新功能
+## 📊 性能对比
 
-### 核心技术栈
-- **识别**: Gemini Vision API + OpenCV
-- **解牌**: Ollama + ChromaDB + RAG
-- **数据**: 完整韦特塔罗知识库
+| 方案 | 质量 | 隐私 | 成本 | 速度 |
+|------|------|------|------|------|
+| **R1 LoRA本地** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ |
+| R1 API | ⭐⭐⭐⭐⭐ | ⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐⭐⭐ |
+| Qwen微调 | ⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐ |
 
-## 📝 许可证
+## 🗂️ 历史版本
 
-MIT License
+### 传统AI模块 (ai/)
+- 基础塔罗解读逻辑
+- 牌阵系统实现
+- RAG知识检索
+
+### 视觉识别 (vision/)  
+- Gemini Vision API
+- 图像预处理优化
+- 批量卡牌识别
+
+### 数据管理 (data/)
+- SQLite知识库
+- 卡牌meaning笔记
+- 历史解读数据
+
+## 🌟 未来计划
+
+- [ ] R1多模态支持（文本+图像）
+- [ ] 网页界面开发
+- [ ] 移动端适配
+- [ ] 多语言支持
+
+## 📚 文档索引
+
+- [R1 LoRA系统](models/r1_lora_system/README.md) - 完整的本地训练指南
+- [LoRA技术对比](models/r1_lora_system/lora_comparison.md) - 深度技术分析
+- [视觉识别指南](vision/README.md) - 卡牌识别使用说明
+
+---
+
+*最后更新: 2024年7月31日*
