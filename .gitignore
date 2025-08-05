@@ -5,3 +5,8 @@
 /models
 
 .env.local
+
+scripts/r1_lora_system/models/
+hf_cache/
+*.safetensors
+*.bin

@@ -38,14 +38,17 @@ def check_m4_compatibility():
         print(f"💾 可用内存: {available_gb:.1f}GB")
         
         # 内存建议
-        if available_gb < 8:
-            print("❌ 可用内存不足8GB，无法训练")
+        if available_gb < 7:  # 降低阈值从8GB到7GB
+            print("❌ 可用内存不足7GB，无法训练")
             return False
-        elif available_gb < 12:
-            print("⚠️ 内存有限，建议使用1.5B模型 + 4bit量化")
+        elif available_gb < 8:  # 新增超级省内存模式
+            print("⚠️ 内存紧张，使用超级省内存模式：1.5B + 4bit + 激进优化")
+            return "tiny"
+        elif available_gb < 14:
+            print("⚠️ 内存有限，建议使用1.5B模型 (无4bit)")
             return "small"
-        elif available_gb < 16:
-            print("⚠️ 内存刚好够用，建议使用7B模型 + 4bit量化")
+        elif available_gb < 20:
+            print("⚠️ 内存刚好够用，建议使用7B模型 (无4bit)")
             return "medium"
         else:
             print("✅ 内存充足，可以训练7B模型")
@@ -58,23 +61,17 @@ def check_m4_compatibility():
 
 def choose_model_config(memory_status):
     """根据内存情况选择模型配置"""
-    if memory_status == "small":
+    if memory_status == "70b":  # 新增70B QLoRA配置
         return {
-            "model_name": "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B", 
+            "model_name": "deepseek-ai/DeepSeek-R1-Distill-Qwen-70B",
             "use_4bit": True,
             "batch_size": 1,
-            "gradient_accumulation": 8,
-            "max_seq_length": 512,
-            "gradient_checkpointing": True
-        }
-    elif memory_status == "medium":
-        return {
-            "model_name": "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
-            "use_4bit": True, 
-            "batch_size": 1,
-            "gradient_accumulation": 4,
-            "max_seq_length": 1024,
-            "gradient_checkpointing": True
+            "gradient_accumulation": 32,  # 更大的梯度累积模拟大批次
+            "max_seq_length": 512,  # 控制序列长度
+            "gradient_checkpointing": True,
+            "lora_r": 16,  # LoRA rank
+            "lora_alpha": 32,  # LoRA scaling
+            "lora_dropout": 0.1
         }
     else:
         return {
@@ -128,62 +125,6 @@ def install_dependencies():
     print("✅ 依赖安装完成")
     return True
 
-def prepare_local_dataset():
-    """准备本地训练数据 - 不上传任何内容"""
-    print("📚 准备本地训练数据...")
-    
-    # 读取本地数据库
-    db_path = "data/deepseek_tarot_knowledge.db"
-    if not Path(db_path).exists():
-        print(f"❌ 本地数据库不存在: {db_path}")
-        return None
-    
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    cursor.execute("SELECT person, question, cards, spread, content FROM readings")
-    readings = cursor.fetchall()
-    conn.close()
-    
-    if len(readings) < 50:
-        print(f"⚠️ 数据量较少({len(readings)}条)，建议至少50条以上")
-        
-    print(f"📊 找到 {len(readings)} 条本地解读数据")
-    
-    # 构建训练数据
-    training_data = []
-    for person, question, cards, spread, content in readings:
-        # 标准化输入格式
-        instruction = f"""作为专业塔罗师，请为以下咨询提供深度解读：
-
-咨询者：{person}
-问题：{question}
-牌阵：{spread or '自由牌阵'}
-抽到的牌：{cards}
-
-请运用你的专业知识和直觉进行解读。"""
-
-        training_data.append({
-            "instruction": instruction,
-            "output": content,
-            "metadata": {
-                "person": person,
-                "cards": cards,
-                "length": len(content)
-            }
-        })
-    
-    # 保存到本地
-    output_file = "data/local_training_data.json"
-    os.makedirs("data", exist_ok=True)
-    
-    with open(output_file, 'w', encoding='utf-8') as f:
-        json.dump(training_data, f, ensure_ascii=False, indent=2)
-    
-    print(f"✅ 训练数据保存到: {output_file}")
-    print(f"🔒 数据完全保存在本地，不会上传到任何服务器")
-    
-    return training_data
-
 def setup_m4_lora_config():
     """M4优化的LoRA配置"""
     try:
@@ -222,12 +163,13 @@ def train_local_lora():
     print("="*50)
     
     # 1. 硬件检查
-    memory_status = check_m4_compatibility()
-    if memory_status == False:
+    hardware_status = detect_hardware_environment()
+    if hardware_status == "cpu":
+        print("❌ 不支持CPU训练，请使用GPU环境")
         return False
     
     # 2. 选择模型配置
-    config = choose_model_config(memory_status)
+    config = choose_model_config(hardware_status)
     print(f"\n⚙️ 选择配置：{config['model_name']}")
     print(f"💾 4bit量化：{'是' if config['use_4bit'] else '否'}")
     print(f"📦 批处理大小：{config['batch_size']}")
@@ -297,16 +239,35 @@ def train_local_lora():
             model.gradient_checkpointing_enable()
             print("✅ 启用梯度检查点以节省内存")
         
-        # 如果没有量化，手动移动到MPS
-        if not config['use_4bit']:
-            print("🔄 将模型移动到M4 GPU...")
-            model = model.to("mps")
+        # 根据环境选择设备
+        device = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
+        if not config['use_4bit'] and device != "cpu":
+            print(f"🔄 将模型移动到 {device.upper()}...")
+            model = model.to(device)
         
         print(f"✅ 模型加载成功！参数量: {model.num_parameters():,}")
         
+        # 配置LoRA
+        print("🔧 配置LoRA适配器...")
+        from peft import LoraConfig, get_peft_model, TaskType
+        
+        lora_config = LoraConfig(
+            r=config.get('lora_r', 16),
+            lora_alpha=config.get('lora_alpha', 32),
+            target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+            lora_dropout=config.get('lora_dropout', 0.1),
+            bias="none",
+            task_type=TaskType.CAUSAL_LM,
+        )
+        
+        model = get_peft_model(model, lora_config)
+        model.print_trainable_parameters()
+        
         # 清理内存并监控
         gc.collect()
-        if torch.backends.mps.is_available():
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        elif torch.backends.mps.is_available():
             torch.mps.empty_cache()
         
         monitor_memory_usage()
@@ -325,17 +286,11 @@ def train_local_lora():
     model.print_trainable_parameters()
     
     # 7. 准备数据集
+    from datasets import Dataset
     dataset = Dataset.from_list(training_data)
+    print(f"✅ 数据集准备完成: {len(dataset)} 条数据")
     
-    def formatting_func(examples):
-        """格式化训练数据"""
-        texts = []
-        for instruction, output in zip(examples["instruction"], examples["output"]):
-            text = f"{instruction}\n\n{output}"
-            texts.append(text)
-        return {"text": texts}
-    
-    dataset = dataset.map(formatting_func, batched=True)
+    # 数据已经是正确的格式，包含text字段，无需额外处理
     
     # 8. 训练配置 - 内存优化
     training_args = TrainingArguments(
@@ -364,7 +319,7 @@ def train_local_lora():
         weight_decay=0.01,
         
         # MPS优化
-        fp16=True,
+        fp16=False,
         dataloader_num_workers=0,  # MPS不支持多进程
         dataloader_pin_memory=False,
         
@@ -377,16 +332,14 @@ def train_local_lora():
         push_to_hub=False,  # 不上传到云端
     )
     
-    # 9. 创建训练器
+    # 9. 创建数据收集器
+    # 9. 创建训练器 (适配trl>=0.20.0接口)
     trainer = SFTTrainer(
         model=model,
         args=training_args,
         train_dataset=dataset,
-        tokenizer=tokenizer,
-        max_seq_length=config['max_seq_length'],  # 根据内存调整
+        processing_class=tokenizer,
         peft_config=lora_config,
-        dataset_text_field="text",
-        packing=False,
     )
     
     # 10. 开始训练
@@ -436,15 +389,16 @@ def test_local_model():
         from transformers import AutoTokenizer, AutoModelForCausalLM
         from peft import PeftModel
         
-        # 加载模型
-        base_model_name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
+        # 加载模型 - 使用与训练时相同的1.5B模型
+        base_model_name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
         tokenizer = AutoTokenizer.from_pretrained(model_path)
         
         base_model = AutoModelForCausalLM.from_pretrained(
             base_model_name,
             torch_dtype=torch.float16,
-            device_map="mps",
-            trust_remote_code=True
+            device_map="auto",
+            trust_remote_code=True,
+            low_cpu_mem_usage=True
         )
         
         model = PeftModel.from_pretrained(base_model, model_path)
@@ -483,12 +437,29 @@ def test_local_model():
 
 def estimate_training_time():
     """估算训练时间"""
-    print("⏱️ 训练时间估算（M4 MacBook Air）：")
-    print("  - 数据准备: 10-20分钟")
-    print("  - 模型下载: 15-30分钟（首次）")
-    print("  - LoRA训练: 2-4小时")
-    print("  - 总耗时: 3-5小时")
-    print("  - 电费成本: ~$1-2")
+    hardware_status = detect_hardware_environment()
+    
+    if hardware_status == "70b":
+        print("⏱️ 训练时间估算（H100 GPU - 70B模型）：")
+        print("  - 数据准备: 5-10分钟")
+        print("  - 模型下载: 30-60分钟（首次）")
+        print("  - QLoRA训练: 3-6小时")
+        print("  - 总耗时: 4-7小时")
+        print("  - Lambda成本: ~$10-18")
+    elif hardware_status in ["medium", "large"]:
+        print("⏱️ 训练时间估算（A100 GPU - 7B模型）：")
+        print("  - 数据准备: 5-10分钟")
+        print("  - 模型下载: 10-20分钟（首次）")
+        print("  - LoRA训练: 1-3小时")
+        print("  - 总耗时: 2-4小时")
+        print("  - Lambda成本: ~$3-6")
+    else:
+        print("⏱️ 训练时间估算（M4 MacBook Air）：")
+        print("  - 数据准备: 10-20分钟")
+        print("  - 模型下载: 15-30分钟（首次）")
+        print("  - LoRA训练: 2-4小时")
+        print("  - 总耗时: 3-5小时")
+        print("  - 电费成本: ~$1-2")
 
 def aggressive_memory_optimization():
     """激进内存优化"""
@@ -522,23 +493,49 @@ def monitor_memory_usage():
     except ImportError:
         return True
 
+def detect_hardware_environment():
+    """检测硬件环境"""
+    print("🔍 检测硬件环境...")
+    
+    if torch.cuda.is_available():
+        gpu_name = torch.cuda.get_device_name(0)
+        total_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+        print(f"✅ CUDA GPU: {gpu_name}")
+        print(f"💾 GPU内存: {total_memory:.1f}GB")
+        
+        # 根据显存推荐配置
+        if total_memory >= 75:  # H100等大显存卡
+            return "70b"
+        elif total_memory >= 35:  # A100等中等显存卡  
+            return "medium"
+        else:
+            return "small"
+            
+    elif torch.backends.mps.is_available():
+        print("✅ Apple Silicon MPS")
+        return check_m4_compatibility()
+    else:
+        print("❌ 仅支持CPU，不建议训练")
+        return "cpu"
+
 if __name__ == "__main__":
-    print("🏠 本地R1-Distill LoRA训练系统")
+    print("🏠 R1-Distill LoRA训练系统")
     print("🔒 完全保护数据隐私，不上传任何内容")
+    print("🎯 支持70B QLoRA高效微调")
     print()
     
     while True:
         print("\n选择操作：")
-        print("1. 检查硬件兼容性")
-        print("2. 估算训练时间")
-        print("3. 开始本地训练")
-        print("4. 测试本地模型")
+        print("1. 检测硬件环境")
+        print("2. 估算训练时间") 
+        print("3. 开始LoRA训练")
+        print("4. 测试训练模型")
         print("5. 退出")
         
         choice = input("\n请选择 (1-5): ").strip()
         
         if choice == "1":
-            check_m4_compatibility()
+            detect_hardware_environment()
         elif choice == "2":
             estimate_training_time()
         elif choice == "3":
