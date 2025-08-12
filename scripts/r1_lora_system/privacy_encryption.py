@@ -148,6 +148,7 @@ def main():
     parser = argparse.ArgumentParser(description="塔罗牌数据隐私加密工具")
     parser.add_argument("--encrypt", metavar="FILE", help="加密指定文件")
     parser.add_argument("--decrypt", metavar="FILE", help="解密指定文件")
+    parser.add_argument("--password", metavar="PASS", help="明文密码（可选；也可使用环境变量 PRIVACY_PASSWORD）")
     
     args = parser.parse_args()
     
@@ -155,12 +156,15 @@ def main():
         print("❌ 错误：不能同时使用 --encrypt 和 --decrypt")
         return
     
+    # 支持环境变量密码，优先使用命令行参数
+    password = args.password or os.getenv("PRIVACY_PASSWORD")
+
     if args.encrypt:
         if not os.path.exists(args.encrypt):
             print(f"❌ 文件不存在: {args.encrypt}")
             return
             
-        encryptor = FileEncryptor()
+        encryptor = FileEncryptor(password=password)
         encryptor.encrypt_file(args.encrypt)
         
         print("\n🔐 加密成功！")
@@ -174,7 +178,7 @@ def main():
             print(f"❌ 文件不存在: {args.decrypt}")
             return
             
-        encryptor = FileEncryptor()
+        encryptor = FileEncryptor(password=password)
         encryptor.decrypt_file(args.decrypt)
         
         print("\n🔓 解密成功！")

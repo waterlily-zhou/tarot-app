@@ -2,7 +2,7 @@
 # 上传主要训练文件 - training_data.jsonl
 set -e
 
-LAMBDA_HOST="209.20.156.97"
+LAMBDA_HOST="209.20.157.148"
 SSH_KEY="~/.ssh/tarot-training-key"
 
 echo "🚀 上传主要训练文件到Lambda"
@@ -30,7 +30,7 @@ echo "   📝 所有必需的训练脚本"
 echo "   🛡️ 隐私保护工具"
 echo ""
 echo "🎯 下一步："
-echo "1. ssh -i ~/.ssh/tarot-training-key ubuntu@209.20.156.97"
+echo "1. ssh -i ~/.ssh/tarot-training-key ubuntu@209.20.157.148"
 echo "2. python3 privacy_encryption.py --decrypt"
 echo "3. source private_env.sh"
 echo "4. python3 private_train.py"
