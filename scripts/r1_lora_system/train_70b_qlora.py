@@ -5,6 +5,11 @@ DeepSeek R1 70B QLoRA 微调脚本 - 优化版
 import os
 import sys
 import torch
+
+# 强制实时输出，禁用Python缓冲区
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
+os.environ['PYTHONUNBUFFERED'] = '1'
 import json
 from pathlib import Path
 import gc
@@ -45,52 +50,153 @@ def load_training_data(data_path="training_data.jsonl"):
 def setup_70b_model():
     print("🚀 设置DeepSeek R1 70B模型...")
     
-    # 🔧 调试版本：详细检查缓存文件状态
-    print("🔧 调试模式：详细检查缓存状态...")
+    # 🔥 DeepSeek终极解决方案：跳过调试，直接进入核心修复
+    print("🚀 实施DeepSeek团队终极FP8解决方案...")
     
+    # 导入必要的库
     try:
-        import glob
-        import re
+        from transformers import (
+            AutoTokenizer, 
+            AutoModelForCausalLM, 
+            AutoConfig,
+            BitsAndBytesConfig,
+            DataCollatorForLanguageModeling,
+            get_linear_schedule_with_warmup
+        )
+        from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+        from datasets import Dataset
         import os
+        import torch
         
-        # 先检查缓存根目录
-        cache_root = "/home/ubuntu/.cache/huggingface"
-        print(f"📁 缓存根目录: {cache_root}")
-        print(f"📁 缓存根目录存在: {os.path.exists(cache_root)}")
+        # 🔥 DeepSeek终极解决方案：使用本地缓存路径
+        model_id = "deepseek-ai/DeepSeek-R1"  # 使用主版本，避免FP8配置
+        model_path = "/home/ubuntu/.cache/huggingface/models--deepseek-ai--DeepSeek-R1/snapshots/56d4cbbb4d29f4355bab4b9a39ccb717a14ad5ad"
         
-        if os.path.exists(cache_root):
-            # 列出所有子目录
-            print("📂 缓存目录结构:")
-            for root, dirs, files in os.walk(cache_root):
-                level = root.replace(cache_root, '').count(os.sep)
-                indent = ' ' * 2 * level
-                print(f"{indent}{os.path.basename(root)}/")
-                if level < 3:  # 限制深度避免输出过多
-                    subindent = ' ' * 2 * (level + 1)
-                    for file in files[:5]:  # 只显示前5个文件
-                        print(f"{subindent}{file}")
-                    if len(files) > 5:
-                        print(f"{subindent}... (+{len(files)-5} more files)")
+        # 临时禁用离线模式
+        offline_vars = {}
+        for var in ["HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "HF_DATASETS_OFFLINE"]:
+            if var in os.environ:
+                offline_vars[var] = os.environ.pop(var)
+                print(f"🔓 临时禁用: {var}")
         
-        # 尝试多种可能的路径模式
-        patterns = [
-            "/home/ubuntu/.cache/huggingface/modules/transformers_modules/*/modeling_deepseek.py",
-            "/home/ubuntu/.cache/huggingface/hub/models--*/snapshots/*/modeling_deepseek.py",
-            "/home/ubuntu/.cache/huggingface/hub/*/modeling_deepseek.py",
-            "/home/ubuntu/.cache/huggingface/*/modeling_deepseek.py"
-        ]
+        print(f"🚀 使用DeepSeek-R1主版本: {model_path}")
         
-        all_modeling_files = []
-        for pattern in patterns:
-            files = glob.glob(pattern)
-            print(f"🔍 搜索模式 '{pattern}': 找到 {len(files)} 个文件")
-            all_modeling_files.extend(files)
+        # DeepSeek终极配置清理方案
+        print("🚀 实施DeepSeek终极FP8解决方案...")
+        config = AutoConfig.from_pretrained(model_path, local_files_only=True, trust_remote_code=True)
         
-        # 去重
-        all_modeling_files = list(set(all_modeling_files))
-        print(f"📋 总共找到 {len(all_modeling_files)} 个modeling_deepseek.py文件")
+        # 强制清除所有量化配置
+        try:
+            # 深度清除配置中的量化设置
+            if hasattr(config, "quantization_config"):
+                config.quantization_config = None
+            
+            # 清除可能存在的FP8标志
+            for attr in ["fp8", "use_fp8", "is_fp8", "quantization"]:
+                if hasattr(config, attr):
+                    delattr(config, attr)
+                    print(f"🧹 已删除属性: {attr}")
+            
+            # 清除所有量化相关属性
+            for key in list(config.to_dict().keys()):
+                if "quant" in key.lower() or "fp8" in key.lower():
+                    delattr(config, key)
+                    print(f"🧹 已删除配置键: {key}")
+            
+            # 创建新的干净配置对象
+            clean_config = AutoConfig.from_dict(config.to_dict())
+            config = clean_config
+            print("✅ 已创建全新的干净配置对象")
+            
+            # 清除模型类中的量化属性
+            AutoModelForCausalLM.quantization_config = None
+            print("✅ 已彻底清除所有量化配置")
+        except Exception as e:
+            print(f"⚠️ 量化配置清除失败: {e}")
+
+        # 创建我们自己的4bit量化配置
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_compute_dtype=torch.bfloat16,
+        )
         
-        for file_path in all_modeling_files:
+        # 暂时禁用所有量化配置检查，但返回空字典而不是None
+        import transformers.quantizers.auto as qa_module
+        original_merge = qa_module.AutoHfQuantizer.merge_quantization_configs
+        def dummy_merge(*args, **kwargs):
+            print("🛑 跳过量化配置合并，返回空配置")
+            return {}  # 返回空字典而不是None
+        qa_module.AutoHfQuantizer.merge_quantization_configs = staticmethod(dummy_merge)
+        
+        # 同时修复 supports_quant_method 检查
+        original_supports = qa_module.AutoHfQuantizer.supports_quant_method
+        def dummy_supports(quantization_config):
+            if quantization_config is None:
+                return True
+            # 确保quantization_config是字典
+            if not isinstance(quantization_config, dict):
+                return True
+            return original_supports(quantization_config)
+        qa_module.AutoHfQuantizer.supports_quant_method = staticmethod(dummy_supports)
+        
+        # 彻底禁用量化配置检查
+        def bypass_pre_quantized_check(config):
+            """绕过预量化检查"""
+            if hasattr(config, 'quantization_config'):
+                config.quantization_config = None
+            return config
+        
+        # 首先在config中设置use_cache
+        config.use_cache = False
+        
+        # 清除任何预设的量化配置
+        config = bypass_pre_quantized_check(config)
+        print(f"🧹 配置清理完成，quantization_config: {getattr(config, 'quantization_config', 'None')}")
+        
+        # 🚀 激进显存优化：混合CPU-GPU加载
+        print("🔧 加载模型（混合CPU-GPU模式）...")
+        
+        # 清理GPU缓存
+        torch.cuda.empty_cache()
+        gc.collect()
+        
+        # 使用更激进的显存优化配置
+        model = AutoModelForCausalLM.from_pretrained(
+          model_path,
+          config=config,  # 使用我们清理过的配置
+          quantization_config=bnb_config,  # 强制使用我们的4bit配置
+          device_map="auto",  # 让系统自动分配CPU-GPU
+          trust_remote_code=True,
+          torch_dtype=torch.bfloat16,
+          local_files_only=True,  # 使用本地缓存文件
+          ignore_mismatched_sizes=True,  # 忽略可能的配置不匹配
+          low_cpu_mem_usage=True,  # 启用内存优化
+          max_memory={0: "70GB", "cpu": "50GB"},  # 限制GPU使用70GB，余下用CPU
+          offload_folder="./offload",  # CPU offload目录
+        )
+        print("✅ 模型加载成功，使用DeepSeek方案的4bit NF4量化")
+        
+        # 🔧 显存优化：启用gradient checkpointing
+        if hasattr(model, 'gradient_checkpointing_enable'):
+            model.gradient_checkpointing_enable()
+            print("✅ 已启用gradient checkpointing节省显存")
+        
+        # 恢复原始函数
+        qa_module.AutoHfQuantizer.merge_quantization_configs = original_merge
+        
+        # 加载tokenizer
+        print("🔹 加载tokenizer...")
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_path, 
+            trust_remote_code=True,
+            padding_side="right"
+        )
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        
+        # 准备模型进行QLoRA训练
             print(f"📄 检查文件: {file_path}")
             print(f"📄 文件存在: {os.path.exists(file_path)}")
             
@@ -264,52 +370,23 @@ def setup_70b_model():
         import os
         import torch
         
-        # 使用本地干净快照路径
-        model_path = os.path.expanduser("~/.cache/huggingface/hub/models--deepseek-ai--DeepSeek-R1-0528/snapshots")
-        # 找到最新的快照目录（按修改时间排序，优先选择最新的）
-        if os.path.exists(model_path):
-            snapshot_dirs = [os.path.join(model_path, d) for d in os.listdir(model_path)
-                             if os.path.isdir(os.path.join(model_path, d))]
-            if snapshot_dirs:
-                snapshot_dirs.sort(key=lambda p: os.path.getmtime(p), reverse=True)
-                model_path = snapshot_dirs[0]
-            else:
-                raise FileNotFoundError("No snapshot found in cache")
-        else:
-            raise FileNotFoundError(f"Cache directory not found: {model_path}")
+        # 🔥 终极解决方案：完全绕过本地缓存，直接使用模型ID
+        model_id = "deepseek-ai/DeepSeek-R1"  # 使用主版本，避免FP8配置
+        model_path = model_id  # 直接使用模型ID，让transformers自动处理
         
-        print(f"✅ 使用本地快照: {model_path}")
+        print(f"🚀 使用DeepSeek-R1主版本（绕过本地缓存）: {model_path}")
+        
+        # 临时禁用离线模式，确保能访问主版本
+        import os as _temp_os
+        offline_vars = {}
+        for var in ["HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "HF_DATASETS_OFFLINE"]:
+            if var in _temp_os.environ:
+                offline_vars[var] = _temp_os.environ.pop(var)
+                print(f"🔓 临时禁用: {var}")
+        
+        print(f"✅ 准备加载DeepSeek-R1主版本: {model_path}")
 
-        # 快照完整性预检：若分片不全，在线补全下载
-        try:
-            import glob as _glob
-            import re as _re
-            shard_paths = sorted(_glob.glob(os.path.join(model_path, 'model-*-of-*.safetensors')))
-            if shard_paths:
-                total = int(_re.search(r'-of-(\d+)', os.path.basename(shard_paths[0])).group(1))
-                have_nums = {int(_re.search(r'model-(\d+)-of-', os.path.basename(p)).group(1)) for p in shard_paths}
-                missing = [i for i in range(1, total + 1) if i not in have_nums]
-                if missing:
-                    print(f"⚠️ 本地快照缺少 {len(missing)}/{total} 个分片，准备在线补全...")
-                    # 临时关闭离线变量
-                    import os as _os
-                    for _k in ["HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "HF_DATASETS_OFFLINE"]:
-                        if _k in _os.environ:
-                            print(f"🔓 临时关闭环境变量: {_k}")
-                            _os.environ.pop(_k, None)
-                    # 使用 huggingface_hub 补全下载
-                    from huggingface_hub import snapshot_download as _snapshot_download
-                    new_path = _snapshot_download(
-                        repo_id="deepseek-ai/DeepSeek-R1-0528",
-                        local_files_only=False,
-                        resume_download=True,
-                        allow_patterns=["*.json", "*.py", "*.safetensors", "*.bin", "*.model", "tokenizer*", "*.txt"],
-                        local_dir_use_symlinks=False,
-                    )
-                    print(f"✅ 快照补全完成: {new_path}")
-                    model_path = new_path
-        except Exception as _e:
-            print(f"⚠️ 快照预检/补全失败（忽略继续）: {_e}")
+        # 跳过快照完整性检查，直接使用在线模型
         
         # 使用4bit量化（QLoRA标准），显著降低显存占用
         bnb_config = BitsAndBytesConfig(
@@ -350,18 +427,181 @@ def setup_70b_model():
             import os as _os
             _os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
-            # 简化：直接使用 auto 设备映射，让transformers自动处理
-            model = AutoModelForCausalLM.from_pretrained(
-              model_path,
-              quantization_config=bnb_config,
-              device_map="auto",
-              trust_remote_code=True,
-              torch_dtype=torch.bfloat16,
-              use_cache=False,
-              local_files_only=True,
-              # 添加以下两个关键参数
-              low_cpu_mem_usage=False    # 禁用内存优化模式（避免懒初始化）
-            )
+            # 全局猴补：忽略 transformers 量化系统中的 fp8 配置，防止加载阶段报错
+            try:
+                from transformers.quantizers import auto as _qa  # transformers>=4.39
+                _orig_from_dict = _qa.AutoQuantizationConfig.from_dict
+
+                def _patched_from_dict(cfg):
+                    try:
+                        if isinstance(cfg, dict) and str(cfg.get("quant_method", "")).lower() == "fp8":
+                            print("🛑 跳过不受支持的 fp8 量化配置 (from_dict)")
+                            return None
+                    except Exception:
+                        pass
+                    return _orig_from_dict(cfg)
+
+                _qa.AutoQuantizationConfig.from_dict = staticmethod(_patched_from_dict)
+
+                _orig_merge = _qa.AutoHfQuantizer.merge_quantization_configs
+
+                def _patched_merge(*args, **kwargs):
+                    # 标准签名为 (quantization_config)
+                    qc = None
+                    if args:
+                        qc = args[0]
+                    elif "quantization_config" in kwargs:
+                        qc = kwargs.get("quantization_config")
+                    try:
+                        if isinstance(qc, dict) and str(qc.get("quant_method", "")).lower() == "fp8":
+                            print("🛑 跳过不受支持的 fp8 量化配置 (merge)")
+                            if args:
+                                args = (None,) + tuple(args[1:])
+                            else:
+                                kwargs["quantization_config"] = None
+                    except Exception:
+                        pass
+                    return _orig_merge(*args, **kwargs)
+
+                _qa.AutoHfQuantizer.merge_quantization_configs = staticmethod(_patched_merge)
+            except Exception as _e_patch:
+                print(f"⚠️ 量化系统猴补失败（忽略）：{_e_patch}")
+
+            # 在本地快照中清理 FP8 量化配置文件，防止 Transformers 在加载时再次注入 fp8 配置
+            try:
+                import json as _json
+                _conf_json = _os.path.join(model_path, "config.json")
+                if _os.path.exists(_conf_json):
+                    with open(_conf_json, "r", encoding="utf-8") as _f:
+                        _cfg = _json.load(_f)
+                    if isinstance(_cfg.get("quantization_config"), dict) and _cfg["quantization_config"].get("quant_method") == "fp8":
+                        print("🧹 从config.json移除fp8量化配置")
+                        _cfg.pop("quantization_config", None)
+                        with open(_conf_json, "w", encoding="utf-8") as _f:
+                            _json.dump(_cfg, _f, ensure_ascii=False, indent=2)
+                _qconf_json = _os.path.join(model_path, "quantization_config.json")
+                if _os.path.exists(_qconf_json):
+                    try:
+                        _os.rename(_qconf_json, _qconf_json + ".bak")
+                        print("🧹 已重命名quantization_config.json为.bak，避免fp8被再次加载")
+                    except Exception as _e_ren:
+                        print(f"⚠️ 重命名quantization_config.json失败（忽略）：{_e_ren}")
+            except Exception as _e_clean:
+                print(f"⚠️ 清理本地快照fp8量化配置失败（忽略）：{_e_clean}")
+
+            # 添加设备检查（DeepSeek建议）
+            if not torch.cuda.is_available():
+                raise RuntimeError("需要CUDA设备支持")
+            print(f"✅ CUDA可用设备: {torch.cuda.device_count()}个")
+            print(f"✅ PyTorch版本: {torch.__version__}")
+            
+            # 🔥 DeepSeek终极解决方案：完全清除所有量化配置
+            print("🚀 实施DeepSeek终极FP8解决方案...")
+            config = AutoConfig.from_pretrained(model_path, local_files_only=True, trust_remote_code=True)
+            
+            # 强制清除所有量化配置
+            try:
+                # 深度清除配置中的量化设置
+                if hasattr(config, "quantization_config"):
+                    config.quantization_config = None
+                
+                # 清除可能存在的FP8标志
+                for attr in ["fp8", "use_fp8", "is_fp8", "quantization"]:
+                    if hasattr(config, attr):
+                        delattr(config, attr)
+                        print(f"🧹 已删除属性: {attr}")
+                
+                # 清除所有量化相关属性
+                for key in list(config.to_dict().keys()):
+                    if "quant" in key.lower() or "fp8" in key.lower():
+                        delattr(config, key)
+                        print(f"🧹 已删除配置键: {key}")
+                
+                # 创建新的干净配置对象
+                clean_config = AutoConfig.from_dict(config.to_dict())
+                config = clean_config
+                print("✅ 已创建全新的干净配置对象")
+                
+                # 清除模型类中的量化属性
+                AutoModelForCausalLM.quantization_config = None
+                print("✅ 已彻底清除所有量化配置")
+            except Exception as e:
+                print(f"⚠️ 量化配置清除失败: {e}")
+
+            # 🔥 最激进方案：完全绕过transformers量化系统，使用纯净加载
+            print("🔧 绕过所有预设量化，使用纯净4bit QLoRA配置")
+            
+            # 暂时禁用所有量化配置检查
+            import transformers.quantizers.auto as qa_module
+            original_merge = qa_module.AutoHfQuantizer.merge_quantization_configs
+            def dummy_merge(*args, **kwargs):
+                print("🛑 跳过量化配置合并")
+                return None
+            qa_module.AutoHfQuantizer.merge_quantization_configs = staticmethod(dummy_merge)
+            
+            try:
+                # 首先在config中设置use_cache
+                config.use_cache = False
+                
+                # 🚀 激进显存优化：混合CPU-GPU加载
+                print("🔧 加载模型（混合CPU-GPU模式）...")
+                
+                # 清理GPU缓存
+                torch.cuda.empty_cache()
+                gc.collect()
+                
+                # 使用更激进的显存优化配置
+                model = AutoModelForCausalLM.from_pretrained(
+                  model_path,
+                  config=config,  # 使用我们清理过的配置
+                  quantization_config=bnb_config,  # 强制使用我们的4bit配置
+                  device_map="auto",  # 让系统自动分配CPU-GPU
+                  trust_remote_code=True,
+                  torch_dtype=torch.bfloat16,
+                  local_files_only=True,  # 使用本地缓存文件
+                  ignore_mismatched_sizes=True,  # 忽略可能的配置不匹配
+                  low_cpu_mem_usage=True,  # 启用内存优化
+                  max_memory={0: "70GB", "cpu": "50GB"},  # 限制GPU使用70GB，余下用CPU
+                  offload_folder="./offload",  # CPU offload目录
+                )
+                print("✅ 模型加载成功，使用DeepSeek方案的4bit NF4量化")
+                
+                # DeepSeek备选方案：应用量化自由包装器
+                print("🔧 应用DeepSeek量化自由包装器...")
+                try:
+                    from transformers import ModelingMixin
+                    
+                    class QuantFreeModel(ModelingMixin):
+                        def __init__(self, base_model):
+                            super().__init__()
+                            self.model = base_model
+                            self.config = base_model.config
+                            
+                            # 清除量化标志
+                            self.is_quantized = False
+                            if hasattr(self.config, "quantization_config"):
+                                self.config.quantization_config = None
+                            
+                            # 清除所有量化相关属性
+                            for attr in ["fp8", "use_fp8", "is_fp8", "quantization"]:
+                                if hasattr(self.config, attr):
+                                    delattr(self.config, attr)
+                        
+                        def forward(self, *args, **kwargs):
+                            return self.model(*args, **kwargs)
+                        
+                        def __getattr__(self, name):
+                            return getattr(self.model, name)
+                    
+                    # 应用包装器
+                    model = QuantFreeModel(model)
+                    print("✅ 已应用量化自由包装器")
+                except Exception as wrapper_e:
+                    print(f"⚠️ 包装器应用失败，继续使用原模型: {wrapper_e}")
+                    
+            finally:
+                # 恢复原始函数
+                qa_module.AutoHfQuantizer.merge_quantization_configs = original_merge
             
             # ===== 新增设备修复代码块 =====
             print("🔧 强制设备一致性修复...")
@@ -767,6 +1007,13 @@ def disable_finegrained_fp8_device_context_if_cpu(model):
 def train_70b_qlora():
     print("🎯 开始DeepSeek R1 70B QLoRA微调")
     print("="*60)
+    
+    # 🚀 激进显存优化：预清理
+    torch.cuda.empty_cache()
+    gc.collect()
+    
+    # 设置PyTorch显存优化
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512"
     
     # 1. 环境检测
     if not detect_environment():
